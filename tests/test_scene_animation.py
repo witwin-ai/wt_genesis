@@ -23,9 +23,11 @@ def _animated_backend(prompts, **kwargs):
 
 def test_generate_humanoid_animation_tool_creates_scene_timeline_and_playback(tmp_path, monkeypatch):
     from witwin_server.core.scene import Scene
+    import wt_genesis.adapter.scene_animation as scene_animation
     from wt_genesis.tools import make_generate_humanoid_animation_tool
 
     monkeypatch.setenv("WITWIN_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setattr(scene_animation, "build_smpl_skin_asset", lambda *args, **kwargs: _tiny_skin_asset())
     scene = Scene(scene_id="main")
     tool = make_generate_humanoid_animation_tool(_FakeContext(scene), backend=_animated_backend)
 
@@ -62,6 +64,7 @@ def test_generate_humanoid_animation_tool_creates_scene_timeline_and_playback(tm
     assert geom is not None
     assert motion is not None
     assert geom.kind == "smpl"
+    assert geom.model_root
     assert motion.motion_path == result["motion_path"]
     assert motion.pose_key == "smpl_pose"
     assert motion.betas_key == "shape"
@@ -70,6 +73,8 @@ def test_generate_humanoid_animation_tool_creates_scene_timeline_and_playback(tm
     assert motion.target_body["component_type"] == "SMPLBody"
     assert motion.frame_count == 4
     assert motion.loop == "on"
+    assert body_obj.get_component("SkinnedMesh") is not None
+    assert body_obj.get_component("GenesisSMPLMesh") is None
 
     timeline = scene.timeline_manager
     assert timeline is not None
@@ -88,13 +93,17 @@ def test_generate_humanoid_animation_tool_creates_scene_timeline_and_playback(tm
     timeline.set_time(2.0 / 20.0, apply_to_scene=True)
     assert int(motion.current_frame) == 2
     assert body.pose == pytest.approx([2.0] * 72)
+    child_bone = scene.get_object(body_obj.get_component("SkinnedMesh").bone_ids[1])
+    assert child_bone.get_component("Transform").get_quaternion().tolist() != pytest.approx([0.0, 0.0, 0.0, 1.0])
 
 
-def test_generate_humanoid_animation_keys_root_motion_on_body_transform(tmp_path):
+def test_generate_humanoid_animation_keys_root_motion_on_body_transform(tmp_path, monkeypatch):
     from scipy.spatial.transform import Rotation
     from witwin_server.core.scene import Scene
+    import wt_genesis.adapter.scene_animation as scene_animation
     from wt_genesis.adapter.scene_animation import create_humanoid_animation
 
+    monkeypatch.setattr(scene_animation, "build_smpl_skin_asset", lambda *args, **kwargs: _tiny_skin_asset())
     scene = Scene(scene_id="main")
     result = create_humanoid_animation(
         scene=scene,
@@ -127,27 +136,12 @@ def test_generate_humanoid_animation_keys_root_motion_on_body_transform(tmp_path
     assert transform.rotation.tolist() == pytest.approx(rotation_track.keyframes[2].value)
 
 
-def test_generate_humanoid_animation_builds_visible_mesh_cache(tmp_path, monkeypatch):
+def test_generate_humanoid_animation_builds_skinned_mesh_visual(tmp_path, monkeypatch):
     from witwin_server.core.scene import Scene
-    import wt_genesis.components.smpl_mesh as smpl_mesh
+    import wt_genesis.adapter.scene_animation as scene_animation
     from wt_genesis.adapter.scene_animation import create_humanoid_animation
 
-    bake_modes = []
-
-    def fake_bake_sequence(*args, **kwargs):
-        bake_modes.append(kwargs.get("root_motion_mode", args[6] if len(args) > 6 else None))
-        vertices = np.array(
-            [
-                [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-                [[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [1.0, 0.0, 1.0]],
-                [[2.0, 0.0, 0.0], [2.0, 1.0, 0.0], [2.0, 0.0, 1.0]],
-            ],
-            dtype=np.float32,
-        )
-        faces = np.array([[0, 1, 2]], dtype=np.uint32)
-        return vertices, faces
-
-    monkeypatch.setattr(smpl_mesh, "bake_smpl_sequence", fake_bake_sequence)
+    monkeypatch.setattr(scene_animation, "build_smpl_skin_asset", lambda *args, **kwargs: _tiny_skin_asset())
     scene = Scene(scene_id="main")
 
     result = create_humanoid_animation(
@@ -161,24 +155,60 @@ def test_generate_humanoid_animation_builds_visible_mesh_cache(tmp_path, monkeyp
     )
 
     body_obj = scene.get_object(result.body_object_id)
-    visual = body_obj.get_component("GenesisSMPLMesh")
+    visual = body_obj.get_component("SkinnedMesh")
     assert visual is not None
     assert body_obj.get_component("Material") is not None
-    assert visual.motion_path == result.motion_asset.motion_path
-    assert visual.frame_count == 3
+    assert body_obj.get_component("GenesisSMPLMesh") is None
+    assert visual.bone_count == 2
+    assert visual.get_mesh_data()["skin_indices"][0] == [0, 1, 0, 0]
 
     visual_track = scene.timeline_manager.clip.get_track(body_obj.id, "GenesisSMPLMesh", "current_frame")
-    assert visual_track is not None
-    assert [keyframe.value for keyframe in visual_track.keyframes] == [0, 1, 2]
-    assert bake_modes
-    assert set(bake_modes) == {"transform"}
-    assert scene.timeline_manager.mesh_cache.is_cached(body_obj.id)
+    assert visual_track is None
+    assert not scene.timeline_manager.mesh_cache.is_cached(body_obj.id)
 
-    mesh = scene.timeline_manager.get_mesh_at_time(body_obj.id, 2.0 / result.motion_asset.fps)
-    assert mesh is not None
-    assert mesh["faces"] == [[0, 1, 2]]
-    assert mesh["vertices"][0] == pytest.approx([2.0, 0.0, 0.0])
-    assert result.visual_mesh_cache["cached_object_count"] == 1
+    root_track = scene.timeline_manager.clip.get_track(visual.bone_ids[0], "Transform", "rotation")
+    child_track = scene.timeline_manager.clip.get_track(visual.bone_ids[1], "Transform", "rotation")
+    assert root_track is not None
+    assert child_track is not None
+    assert len(root_track.keyframes) == 3
+    assert len(child_track.keyframes) == 3
+    assert root_track.keyframes[2].value == pytest.approx([0.0, 0.0, 0.0])
+    assert child_track.keyframes[2].value != pytest.approx([0.0, 0.0, 0.0])
+
+    scene.timeline_manager.set_time(2.0 / result.motion_asset.fps, apply_to_scene=True)
+    child_bone = scene.get_object(visual.bone_ids[1])
+    assert child_bone.get_component("Transform").get_quaternion().tolist() != pytest.approx([0.0, 0.0, 0.0, 1.0])
+    assert result.visual_mesh_cache["mode"] == "skinned_mesh"
+    assert result.visual_mesh_cache["cached_object_count"] == 0
+    assert result.visual_mesh_cache["bone_count"] == 2
+    assert result.visual_mesh_cache["skeleton_track_count"] == 2
+
+
+def _tiny_skin_asset():
+    from wt_humanoid.adapter.smpl_skinned import SMPLSkinAsset
+
+    return SMPLSkinAsset(
+        vertices=np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 0.0, 0.0],
+            ],
+            dtype=np.float32,
+        ),
+        faces=np.array([[0, 1, 2]], dtype=np.uint32),
+        skin_indices=np.array([[0, 1, 0, 0], [1, 0, 0, 0], [1, 0, 0, 0]], dtype=np.int64),
+        skin_weights=np.array([[0.75, 0.25, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+        joint_positions=np.array([[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
+        parent_indices=[-1, 0],
+        inverse_bind_matrices=np.array(
+            [
+                np.eye(4, dtype=np.float32),
+                [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, -1.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
+            ],
+            dtype=np.float32,
+        ),
+    )
 
 
 def _animated_backend_for_frames(frame_count):

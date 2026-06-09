@@ -12,7 +12,9 @@ from witwin_server.core import SceneObject
 from witwin_server.core.components import MaterialComponent, PlatformGeometryComponent
 from witwin_server.features.timeline.data import InterpolationType
 from witwin_server.features.timeline.manager import TimelineManager
+from wt_genesis.components.smpl_mesh import DEFAULT_MODEL_ROOT
 from wt_humanoid.adapter.smpl_motion import load_smpl_motion
+from wt_humanoid.adapter.smpl_skinned import attach_smpl_skinned_mesh, build_smpl_skin_asset
 
 from .motion_export import Backend, MotionExportResult, generate_motion_asset
 
@@ -88,7 +90,7 @@ def create_humanoid_animation(
     position_value = _normalize_position(position)
     root_motion = _build_root_motion_tracks(motion_asset, position_value)
 
-    body_obj, body, visual_mesh = _create_smpl_body(
+    body_obj, body = _create_smpl_body(
         body_name or _default_name("Genesis SMPL Body", prompt),
         root_motion["positions"][0],
         root_motion["rotations"][0],
@@ -114,16 +116,23 @@ def create_humanoid_animation(
     motion.load_motion()
     motion.current_frame = 0
     motion.apply_current_frame(body)
-    visual_mesh.motion_path = motion_asset.motion_path
-    visual_mesh.pose_key = motion_asset.pose_key
-    visual_mesh.betas_key = motion_asset.betas_key
-    visual_mesh.trans_key = motion_asset.trans_key
-    visual_mesh.loop = "on" if loop else "off"
-    visual_mesh.fps = motion_asset.fps
-    visual_mesh.frame_count = motion_asset.frame_count
-    visual_mesh.root_motion_mode = "transform"
-    visual_mesh.current_frame = 0
-    visual_mesh._mark_dirty()
+    body.model_root = str(DEFAULT_MODEL_ROOT)
+    body.sync_platform_geometry()
+    skin_asset = build_smpl_skin_asset(
+        body.model_root,
+        gender=body.gender,
+        betas=body.shape,
+    )
+    skinned_status = attach_smpl_skinned_mesh(
+        scene,
+        body_obj,
+        body,
+        model_root=body.model_root,
+        gender=body.gender,
+        shape=body.shape,
+        asset=skin_asset,
+    )
+    body.sync_skinned_mesh_pose()
 
     timeline = _ensure_timeline(scene)
     timeline.fps = motion_asset.fps
@@ -165,22 +174,10 @@ def create_humanoid_animation(
             time=time,
             interpolation=InterpolationType.LINEAR,
         )
-        timeline.record_keyframe(
-            body_obj.id,
-            "GenesisSMPLMesh",
-            "current_frame",
-            frame,
-            time=time,
-            interpolation=InterpolationType.LINEAR,
-        )
+    skeleton_track_count = _record_skeleton_rotation_tracks(timeline, body_obj, motion_asset)
     track = timeline.clip.get_track(motion_obj.id, "SMPLMotion", "current_frame")
     timeline.set_time(0.0, apply_to_scene=True)
-    visual_mesh_cache = _build_visual_mesh_cache(
-        timeline,
-        scene_id=getattr(scene, "scene_id", "main"),
-        mesh_assets=mesh_assets,
-        broadcast=broadcast,
-    )
+    visual_mesh_cache = _skinned_mesh_visual_status(skinned_status, skeleton_track_count=skeleton_track_count)
     if autoplay:
         timeline.play()
 
@@ -210,24 +207,21 @@ def create_humanoid_animation(
 
 
 def _create_smpl_body(name: str, position: list[float], rotation: list[float] | None = None):
-    from wt_genesis.components.smpl_mesh import GenesisSMPLMeshComponent
     from wt_humanoid.components.smpl import SMPLBodyComponent
 
     obj = SceneObject(name=name, mesh_type="Empty")
     body = SMPLBodyComponent()
     geom = PlatformGeometryComponent()
-    visual_mesh = GenesisSMPLMeshComponent()
     geom.kind = "smpl"
     obj.add_component(MaterialComponent())
     obj.add_component(body)
     obj.add_component(geom)
-    obj.add_component(visual_mesh)
     transform = obj.get_component("Transform")
     transform.position = position
     if rotation is not None:
         transform.rotation = rotation
     body.sync_platform_geometry()
-    return obj, body, visual_mesh
+    return obj, body
 
 
 def _create_smpl_motion(name: str, position: list[float]):
@@ -274,22 +268,55 @@ def _build_root_motion_tracks(motion_asset: MotionExportResult, position: list[f
     return {"positions": positions, "rotations": rotations}
 
 
-def _build_visual_mesh_cache(
-    timeline: TimelineManager,
-    *,
-    scene_id: str,
-    mesh_assets: Any = None,
-    broadcast: Callable[[dict[str, Any]], None] | None = None,
-) -> dict[str, Any]:
-    message = timeline.build_mesh_cache_message(mesh_assets, scene_id)
-    if message and broadcast is not None:
-        broadcast(message)
-    cached_ids = sorted(timeline.mesh_cache.cached_object_ids)
+def _record_skeleton_rotation_tracks(timeline: TimelineManager, body_obj: SceneObject, motion_asset: MotionExportResult) -> int:
+    skinned = body_obj.get_component("SkinnedMesh")
+    if skinned is None:
+        return 0
+    motion = load_smpl_motion(
+        motion_asset.motion_path,
+        pose_key=motion_asset.pose_key,
+        betas_key=motion_asset.betas_key,
+        trans_key=motion_asset.trans_key,
+    )
+    poses = np.asarray(motion.poses, dtype=np.float32).reshape(motion.frame_count, -1)
+    track_count = 0
+    for bone_index, bone_id in enumerate(skinned.bone_ids):
+        for frame in range(motion.frame_count):
+            time = frame / motion_asset.fps
+            rotation = _bone_rotation_euler(poses[frame], bone_index)
+            timeline.record_keyframe(
+                bone_id,
+                "Transform",
+                "rotation",
+                rotation,
+                time=time,
+                interpolation=InterpolationType.LINEAR,
+            )
+        track_count += 1
+    return track_count
+
+
+def _bone_rotation_euler(pose: np.ndarray, bone_index: int) -> list[float]:
+    if bone_index == 0:
+        return [0.0, 0.0, 0.0]
+    start = bone_index * 3
+    rotvec = np.zeros(3, dtype=np.float32)
+    available = max(0, min(3, pose.shape[0] - start))
+    if available:
+        rotvec[:available] = pose[start : start + available]
+    return Rotation.from_rotvec(rotvec).as_euler("ZXY", degrees=False).astype(float).tolist()
+
+
+def _skinned_mesh_visual_status(skinned_status: dict[str, Any], *, skeleton_track_count: int) -> dict[str, Any]:
     return {
-        "ok": bool(cached_ids),
-        "message_type": message.get("type") if message else None,
-        "cached_object_ids": cached_ids,
-        "cached_object_count": len(cached_ids),
+        "ok": bool(skinned_status.get("ok")),
+        "mode": "skinned_mesh",
+        "message_type": None,
+        "cached_object_ids": [],
+        "cached_object_count": 0,
+        "bone_count": int(skinned_status.get("bone_count", 0)),
+        "skeleton_track_count": int(skeleton_track_count),
+        "root_bone_id": skinned_status.get("root_bone_id"),
     }
 
 
