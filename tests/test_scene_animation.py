@@ -97,6 +97,36 @@ def test_generate_humanoid_animation_tool_creates_scene_timeline_and_playback(tm
     assert child_bone.get_component("Transform").get_quaternion().tolist() != pytest.approx([0.0, 0.0, 0.0, 1.0])
 
 
+def test_generate_humanoid_animation_tool_saves_and_broadcasts_final_scene(tmp_path, monkeypatch):
+    from witwin_server.core.scene import Scene
+    import wt_genesis.adapter.scene_animation as scene_animation
+    from wt_genesis.tools import make_generate_humanoid_animation_tool
+
+    monkeypatch.setenv("WITWIN_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setattr(scene_animation, "build_smpl_skin_asset", lambda *args, **kwargs: _tiny_skin_asset())
+    scene = Scene(scene_id="main")
+    server = _FakeServer(scene)
+    tool = make_generate_humanoid_animation_tool(_FakeContext(scene, server=server), backend=_animated_backend)
+
+    result = asyncio.run(
+        tool.call(
+            {
+                "prompt": "a person waves",
+                "motion_length": 0.2,
+                "device": -1,
+                "output_name": "wave scene",
+                "autoplay": False,
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    assert server.persistence.save_scene_calls == [True]
+    assert any(msg["type"] == "objects_batch_created" for msg in server.messages)
+    timeline_state = next(msg for msg in server.messages if msg["type"] == "timeline_state")
+    assert any(track["path"] == result["timeline_track"]["path"] for track in timeline_state["tracks"])
+
+
 def test_generate_humanoid_animation_keys_root_motion_on_body_transform(tmp_path, monkeypatch):
     from scipy.spatial.transform import Rotation
     from witwin_server.core.scene import Scene
@@ -134,6 +164,35 @@ def test_generate_humanoid_animation_keys_root_motion_on_body_transform(tmp_path
     scene.timeline_manager.set_time(2.0 / result.motion_asset.fps, apply_to_scene=True)
     assert transform.position.tolist() == pytest.approx([2.0, 0.0, 3.0])
     assert transform.rotation.tolist() == pytest.approx(rotation_track.keyframes[2].value)
+
+
+def test_generate_humanoid_animation_preserves_initial_vertical_root_translation(tmp_path, monkeypatch):
+    from witwin_server.core.scene import Scene
+    import wt_genesis.adapter.scene_animation as scene_animation
+    from wt_genesis.adapter.scene_animation import create_humanoid_animation
+
+    monkeypatch.setattr(scene_animation, "build_smpl_skin_asset", lambda *args, **kwargs: _tiny_skin_asset())
+    scene = Scene(scene_id="main")
+    result = create_humanoid_animation(
+        scene=scene,
+        project_dir=tmp_path,
+        prompt="a person walks upright",
+        motion_length=0.15,
+        device=-1,
+        output_name="root height",
+        position=[1.0, 0.25, 2.0],
+        backend=_root_height_backend,
+    )
+
+    body_obj = scene.get_object(result.body_object_id)
+    assert body_obj is not None
+    transform = body_obj.get_component("Transform")
+    position_track = scene.timeline_manager.clip.get_track(body_obj.id, "Transform", "position")
+    assert position_track is not None
+
+    assert position_track.keyframes[0].value == pytest.approx([1.0, 1.45, 2.0])
+    assert position_track.keyframes[1].value == pytest.approx([1.5, 1.5, 2.25])
+    assert transform.position.tolist() == pytest.approx([1.0, 1.45, 2.0])
 
 
 def test_generate_humanoid_animation_builds_skinned_mesh_visual(tmp_path, monkeypatch):
@@ -182,6 +241,44 @@ def test_generate_humanoid_animation_builds_skinned_mesh_visual(tmp_path, monkey
     assert result.visual_mesh_cache["cached_object_count"] == 0
     assert result.visual_mesh_cache["bone_count"] == 2
     assert result.visual_mesh_cache["skeleton_track_count"] == 2
+
+
+def test_generate_humanoid_animation_broadcasts_final_objects_and_timeline(tmp_path, monkeypatch):
+    from witwin_server.core.scene import Scene
+    import wt_genesis.adapter.scene_animation as scene_animation
+    from wt_genesis.adapter.scene_animation import create_humanoid_animation
+
+    monkeypatch.setattr(scene_animation, "build_smpl_skin_asset", lambda *args, **kwargs: _tiny_skin_asset())
+    scene = Scene(scene_id="world")
+    messages: list[dict] = []
+
+    result = create_humanoid_animation(
+        scene=scene,
+        project_dir=tmp_path,
+        prompt="a person waves",
+        motion_length=0.15,
+        device=-1,
+        output_name="live wave",
+        backend=_animated_backend_for_frames(3),
+        broadcast=messages.append,
+        serialize_object=lambda obj: obj.to_dict(),
+    )
+
+    batch = next(msg for msg in messages if msg["type"] == "objects_batch_created")
+    assert batch["scene_id"] == "world"
+    object_ids = {obj["id"] for obj in batch["objects"]}
+    assert result.body_object_id in object_ids
+    assert result.motion_object_id in object_ids
+
+    body_payload = next(obj for obj in batch["objects"] if obj["id"] == result.body_object_id)
+    skinned = next(comp for comp in body_payload["components"] if comp["name"] == "SkinnedMesh")
+    assert skinned["bone_ids"]
+    assert len(skinned["bone_ids"]) == 2
+
+    timeline_state = next(msg for msg in messages if msg["type"] == "timeline_state")
+    assert timeline_state["duration"] == pytest.approx(result.duration)
+    assert timeline_state["fps"] == pytest.approx(result.motion_asset.fps)
+    assert any(track["path"] == result.timeline_track["path"] for track in timeline_state["tracks"])
 
 
 def _tiny_skin_asset():
@@ -246,6 +343,19 @@ def _root_motion_backend(prompts, **kwargs):
     }
 
 
+def _root_height_backend(prompts, **kwargs):
+    pose = np.zeros((1, 2, 24, 3), dtype=np.float32)
+    trans = np.array(
+        [[[10.0, 1.2, 5.0], [10.5, 1.25, 5.25]]],
+        dtype=np.float32,
+    )
+    return {
+        "smpl_pose": pose,
+        "smpl_betas": np.zeros((1, 2, 10), dtype=np.float32),
+        "smpl_trans": trans,
+    }
+
+
 @dataclass
 class _ToolBucket:
     registered: list
@@ -256,6 +366,36 @@ class _ToolBucket:
 
 
 class _FakeContext:
+    def __init__(self, scene, server=None):
+        self.scene = scene
+        self.api = _FakeApi(scene, server) if server is not None else None
+        self.tools = _ToolBucket([])
+
+
+class _FakeApi:
+    def __init__(self, scene, server):
+        self.scene = scene
+        self.server = server
+
+
+class _FakePersistence:
+    def __init__(self):
+        self.save_scene_calls: list[bool] = []
+
+    def save_scene(self, force=False):
+        self.save_scene_calls.append(bool(force))
+        return True
+
+
+class _FakeServer:
     def __init__(self, scene):
         self.scene = scene
-        self.tools = _ToolBucket([])
+        self.mesh_assets = None
+        self.messages: list[dict] = []
+        self.persistence = _FakePersistence()
+
+    def _safe_broadcast(self, message):
+        self.messages.append(message)
+
+    def _serialize_object(self, obj, scene):
+        return obj.to_dict()

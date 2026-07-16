@@ -1,3 +1,6 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+
+# wt_genesis is a Studio glue plugin; Genesis runtime/model payloads live in witwin-genesis.
+vendor/

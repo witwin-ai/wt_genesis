@@ -7,7 +7,7 @@ from typing import Any
 from witwin_server.plugins.paths import default_project_dir
 from witwin_server.tools.base import Tool, ToolError, tool
 
-from .adapter.motion_export import Backend, generate_motion_asset
+from witwin.genesis.motion_export import Backend, generate_motion_asset
 from .adapter.scene_animation import create_humanoid_animation
 
 
@@ -162,6 +162,7 @@ def _run_generate_animation(ctx: Any, args: dict[str, Any], backend: Backend | N
     scene = _get_scene(ctx)
     if scene is None:
         raise ToolError("no active scene", code="no_scene")
+    server = _get_server(ctx)
 
     result = create_humanoid_animation(
         scene=scene,
@@ -179,9 +180,11 @@ def _run_generate_animation(ctx: Any, args: dict[str, Any], backend: Backend | N
         autoplay=bool(args.get("autoplay", False)),
         loop=bool(args.get("loop", True)),
         backend=backend,
-        mesh_assets=getattr(_get_server(ctx), "mesh_assets", None),
-        broadcast=_get_broadcast(ctx),
+        mesh_assets=getattr(server, "mesh_assets", None),
+        broadcast=_get_broadcast_for_server(server),
+        serialize_object=_get_serializer(server, scene),
     )
+    _save_generated_scene(server, scene)
     payload = result.to_dict()
     payload["scene_binding"] = {
         "body_object_id": payload["body_object_id"],
@@ -209,8 +212,37 @@ def _get_server(ctx: Any) -> Any:
 
 def _get_broadcast(ctx: Any):
     server = _get_server(ctx)
+    return _get_broadcast_for_server(server)
+
+
+def _get_broadcast_for_server(server: Any):
     broadcast = getattr(server, "_safe_broadcast", None)
     return broadcast if callable(broadcast) else None
+
+
+def _get_serializer(server: Any, scene: Any):
+    serialize = getattr(server, "_serialize_object", None)
+    if not callable(serialize):
+        return None
+
+    def _serialize(obj: Any) -> dict[str, Any]:
+        return serialize(obj, scene)
+
+    return _serialize
+
+
+def _save_generated_scene(server: Any, scene: Any) -> None:
+    persistence = getattr(server, "persistence", None)
+    if persistence is None:
+        return
+    if scene is getattr(server, "scene", None):
+        save_scene = getattr(persistence, "save_scene", None)
+        if callable(save_scene):
+            save_scene(force=True)
+            return
+    save_scene_file = getattr(persistence, "save_scene_file", None)
+    if callable(save_scene_file):
+        save_scene_file(scene)
 
 
 def register(ctx: Any) -> None:

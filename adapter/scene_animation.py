@@ -12,11 +12,11 @@ from witwin_server.core import SceneObject
 from witwin_server.core.components import MaterialComponent, PlatformGeometryComponent
 from witwin_server.features.timeline.data import InterpolationType
 from witwin_server.features.timeline.manager import TimelineManager
-from wt_genesis.components.smpl_mesh import DEFAULT_MODEL_ROOT
+from witwin.genesis.mdm_tiny_runtime import DEFAULT_MODEL_ROOT
 from wt_humanoid.adapter.smpl_motion import load_smpl_motion
 from wt_humanoid.adapter.smpl_skinned import attach_smpl_skinned_mesh, build_smpl_skin_asset
 
-from .motion_export import Backend, MotionExportResult, generate_motion_asset
+from witwin.genesis.motion_export import Backend, MotionExportResult, generate_motion_asset
 
 
 @dataclass(frozen=True)
@@ -71,6 +71,7 @@ def create_humanoid_animation(
     backend: Backend | None = None,
     mesh_assets: Any = None,
     broadcast: Callable[[dict[str, Any]], None] | None = None,
+    serialize_object: Callable[[Any], dict[str, Any]] | None = None,
 ) -> SceneAnimationResult:
     """Generate an SMPL asset, bind it to wt_humanoid objects, and key timeline playback."""
     if scene is None:
@@ -140,46 +141,64 @@ def create_humanoid_animation(
     duration = _motion_duration(motion_asset.frame_count, motion_asset.fps)
     timeline.duration = duration
 
-    timeline.record_keyframe(
-        motion_obj.id,
-        "SMPLMotion",
-        "current_frame",
-        0,
-        time=0.0,
-        interpolation=InterpolationType.LINEAR,
-    )
-    timeline.record_keyframe(
-        motion_obj.id,
-        "SMPLMotion",
-        "current_frame",
-        max(0, motion_asset.frame_count - 1),
-        time=duration,
-        interpolation=InterpolationType.LINEAR,
-    )
+    keyframes = [
+        {
+            "object_id": motion_obj.id,
+            "component_name": "SMPLMotion",
+            "field_name": "current_frame",
+            "value": 0,
+            "time": 0.0,
+            "interpolation": InterpolationType.LINEAR,
+        },
+        {
+            "object_id": motion_obj.id,
+            "component_name": "SMPLMotion",
+            "field_name": "current_frame",
+            "value": max(0, motion_asset.frame_count - 1),
+            "time": duration,
+            "interpolation": InterpolationType.LINEAR,
+        },
+    ]
     for frame in range(motion_asset.frame_count):
         time = frame / motion_asset.fps
-        timeline.record_keyframe(
-            body_obj.id,
-            "Transform",
-            "position",
-            root_motion["positions"][frame],
-            time=time,
-            interpolation=InterpolationType.LINEAR,
+        keyframes.append(
+            {
+                "object_id": body_obj.id,
+                "component_name": "Transform",
+                "field_name": "position",
+                "value": root_motion["positions"][frame],
+                "time": time,
+                "interpolation": InterpolationType.LINEAR,
+            }
         )
-        timeline.record_keyframe(
-            body_obj.id,
-            "Transform",
-            "rotation",
-            root_motion["rotations"][frame],
-            time=time,
-            interpolation=InterpolationType.LINEAR,
+        keyframes.append(
+            {
+                "object_id": body_obj.id,
+                "component_name": "Transform",
+                "field_name": "rotation",
+                "value": root_motion["rotations"][frame],
+                "time": time,
+                "interpolation": InterpolationType.LINEAR,
+            }
         )
-    skeleton_track_count = _record_skeleton_rotation_tracks(timeline, body_obj, motion_asset)
+    skeleton_track_count, skeleton_keyframes = _build_skeleton_rotation_keyframes(body_obj, motion_asset)
+    keyframes.extend(skeleton_keyframes)
+    timeline.record_keyframes(keyframes)
     track = timeline.clip.get_track(motion_obj.id, "SMPLMotion", "current_frame")
     timeline.set_time(0.0, apply_to_scene=True)
     visual_mesh_cache = _skinned_mesh_visual_status(skinned_status, skeleton_track_count=skeleton_track_count)
     if autoplay:
         timeline.play()
+
+    _broadcast_live_scene_update(
+        scene=scene,
+        body_obj=body_obj,
+        motion_obj=motion_obj,
+        skinned_status=skinned_status,
+        timeline=timeline,
+        broadcast=broadcast,
+        serialize_object=serialize_object,
+    )
 
     return SceneAnimationResult(
         ok=True,
@@ -204,6 +223,79 @@ def create_humanoid_animation(
         autoplay=bool(autoplay),
         loop=bool(loop),
     )
+
+
+def _broadcast_live_scene_update(
+    *,
+    scene: Any,
+    body_obj: SceneObject,
+    motion_obj: SceneObject,
+    skinned_status: dict[str, Any],
+    timeline: TimelineManager,
+    broadcast: Callable[[dict[str, Any]], None] | None,
+    serialize_object: Callable[[Any], dict[str, Any]] | None,
+) -> None:
+    if broadcast is None:
+        return
+
+    if serialize_object is not None:
+        object_ids = [body_obj.id, motion_obj.id]
+        object_ids.extend(str(bone_id) for bone_id in skinned_status.get("bone_ids", []) if bone_id)
+
+        objects = []
+        seen = set()
+        for object_id in object_ids:
+            if object_id in seen:
+                continue
+            seen.add(object_id)
+            obj = scene.get_object(object_id) if hasattr(scene, "get_object") else None
+            if obj is None:
+                continue
+            objects.append(serialize_object(obj))
+
+        if objects:
+            children_order = {}
+            if hasattr(scene, "build_children_order"):
+                children_order = scene.build_children_order(include_synthetic=True)
+            elif hasattr(scene, "to_dict"):
+                children_order = scene.to_dict().get("children_order", {})
+            broadcast(
+                {
+                    "type": "objects_batch_created",
+                    "scene_id": getattr(scene, "scene_id", "main"),
+                    "objects": objects,
+                    "children_order": children_order,
+                }
+            )
+
+    broadcast(_timeline_state_message(timeline))
+
+
+def _timeline_state_message(timeline: TimelineManager) -> dict[str, Any]:
+    tracks = []
+    for track in timeline.clip.tracks.values():
+        tracks.append(
+            {
+                "path": track.path,
+                "object_id": track.object_id,
+                "component_name": track.component_name,
+                "field_name": track.field_name,
+                "keyframes": [kf.to_dict() for kf in track.keyframes],
+            }
+        )
+
+    return {
+        "type": "timeline_state",
+        "current_time": timeline.current_time,
+        "current_frame": timeline.current_frame,
+        "is_playing": timeline.is_playing,
+        "is_recording": timeline.is_recording,
+        "is_looping": timeline.is_looping,
+        "duration": timeline.duration,
+        "fps": timeline.fps,
+        "total_frames": timeline.total_frames,
+        "tracks": tracks,
+    }
 
 
 def _create_smpl_body(name: str, position: list[float], rotation: list[float] | None = None):
@@ -259,7 +351,9 @@ def _build_root_motion_tracks(motion_asset: MotionExportResult, position: list[f
     translations = np.asarray(motion.translations, dtype=np.float32).reshape(frame_count, 3)
     base_position = np.asarray(position, dtype=np.float32).reshape(1, 3)
     relative_translation = translations - translations[0].reshape(1, 3)
-    positions = (base_position + relative_translation).astype(float).tolist()
+    positions_array = base_position + relative_translation
+    positions_array[:, 1] = base_position[:, 1] + translations[:, 1]
+    positions = positions_array.astype(float).tolist()
 
     poses = np.asarray(motion.poses, dtype=np.float32).reshape(frame_count, -1)
     root_orient = np.zeros((frame_count, 3), dtype=np.float32)
@@ -268,10 +362,10 @@ def _build_root_motion_tracks(motion_asset: MotionExportResult, position: list[f
     return {"positions": positions, "rotations": rotations}
 
 
-def _record_skeleton_rotation_tracks(timeline: TimelineManager, body_obj: SceneObject, motion_asset: MotionExportResult) -> int:
+def _build_skeleton_rotation_keyframes(body_obj: SceneObject, motion_asset: MotionExportResult) -> tuple[int, list[dict[str, Any]]]:
     skinned = body_obj.get_component("SkinnedMesh")
     if skinned is None:
-        return 0
+        return 0, []
     motion = load_smpl_motion(
         motion_asset.motion_path,
         pose_key=motion_asset.pose_key,
@@ -280,20 +374,23 @@ def _record_skeleton_rotation_tracks(timeline: TimelineManager, body_obj: SceneO
     )
     poses = np.asarray(motion.poses, dtype=np.float32).reshape(motion.frame_count, -1)
     track_count = 0
+    keyframes: list[dict[str, Any]] = []
     for bone_index, bone_id in enumerate(skinned.bone_ids):
         for frame in range(motion.frame_count):
             time = frame / motion_asset.fps
             rotation = _bone_rotation_euler(poses[frame], bone_index)
-            timeline.record_keyframe(
-                bone_id,
-                "Transform",
-                "rotation",
-                rotation,
-                time=time,
-                interpolation=InterpolationType.LINEAR,
+            keyframes.append(
+                {
+                    "object_id": bone_id,
+                    "component_name": "Transform",
+                    "field_name": "rotation",
+                    "value": rotation,
+                    "time": time,
+                    "interpolation": InterpolationType.LINEAR,
+                }
             )
         track_count += 1
-    return track_count
+    return track_count, keyframes
 
 
 def _bone_rotation_euler(pose: np.ndarray, bone_index: int) -> list[float]:

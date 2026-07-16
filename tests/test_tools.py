@@ -44,6 +44,23 @@ def test_generate_smpl_motion_tool_writes_project_motion_asset(tmp_path, monkeyp
     assert result["trans_key"] == "root"
 
 
+def test_generate_smpl_motion_tool_defaults_to_gpu_device_zero(tmp_path, monkeypatch):
+    from wt_genesis.tools import make_generate_smpl_motion_tool
+
+    captured = {}
+
+    def backend(prompts, **kwargs):
+        captured.update(kwargs)
+        return _backend(prompts, **kwargs)
+
+    monkeypatch.setenv("WITWIN_PROJECT_DIR", str(tmp_path))
+    tool = make_generate_smpl_motion_tool(_FakeContext(), backend=backend)
+
+    asyncio.run(tool.call({"prompt": "a person waves"}))
+
+    assert captured["device"] == 0
+
+
 def test_register_adds_namespaced_tool_to_context():
     import wt_genesis.tools as genesis_tools
 

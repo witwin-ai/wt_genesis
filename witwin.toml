@@ -6,7 +6,7 @@ description = "Text-to-motion humanoid generation."
 homepage = ""
 repository = ""
 license = "MIT"
-dependencies = []
+dependencies = ["witwin-genesis>=0.1,<0.2"]
 pluginDependencies = ["wt_humanoid"]
 entry_point = "__init__.py"
 icon = "sparkles"
