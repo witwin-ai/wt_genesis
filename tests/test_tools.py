@@ -61,6 +61,22 @@ def test_generate_smpl_motion_tool_defaults_to_gpu_device_zero(tmp_path, monkeyp
     assert captured["device"] == 0
 
 
+def test_check_genesis_runtime_tool_returns_structured_status(monkeypatch):
+    import wt_genesis.tools as genesis_tools
+
+    class Status:
+        def to_dict(self):
+            return {"ready": False, "missing_smpl_files": ["SMPL_NEUTRAL.pkl"]}
+
+    monkeypatch.setattr(genesis_tools, "inspect_runtime", lambda: Status())
+    tool = genesis_tools.make_check_genesis_runtime_tool(_FakeContext())
+
+    result = asyncio.run(tool.call({}))
+
+    assert result["ready"] is False
+    assert result["missing_smpl_files"] == ["SMPL_NEUTRAL.pkl"]
+
+
 def test_register_adds_namespaced_tool_to_context():
     import wt_genesis.tools as genesis_tools
 
@@ -68,6 +84,7 @@ def test_register_adds_namespaced_tool_to_context():
     genesis_tools.register(ctx)
 
     assert [tool.name for tool in ctx.tools.registered] == [
+        "check_genesis_runtime",
         "generate_smpl_motion",
         "generate_humanoid_animation",
     ]

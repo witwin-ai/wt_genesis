@@ -7,6 +7,7 @@ from typing import Any
 from witwin_server.plugins.paths import default_project_dir
 from witwin_server.tools.base import Tool, ToolError, tool
 
+from witwin.genesis.assets import inspect_runtime
 from witwin.genesis.motion_export import Backend, generate_motion_asset
 from .adapter.scene_animation import create_humanoid_animation
 
@@ -96,6 +97,22 @@ _ANIMATION_INPUT_SCHEMA = {
     "required": ["prompt"],
     "additionalProperties": False,
 }
+
+
+def make_check_genesis_runtime_tool(ctx: Any) -> Tool:
+    @tool(
+        name="check_genesis_runtime",
+        description="Inspect Genesis package, CUDA, downloadable model, and licensed SMPL asset readiness.",
+        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        output_schema={"type": "object"},
+        permission_scope="genesis.runtime.read",
+        permission_tier="read",
+    )
+    def check_genesis_runtime(args: dict[str, Any]) -> dict[str, object]:
+        del args
+        return inspect_runtime().to_dict()
+
+    return check_genesis_runtime
 
 
 def make_generate_smpl_motion_tool(ctx: Any, *, backend: Backend | None = None) -> Tool:
@@ -247,5 +264,6 @@ def _save_generated_scene(server: Any, scene: Any) -> None:
 
 def register(ctx: Any) -> None:
     """contributes.tools hook: register Genesis text-to-SMPL tools."""
+    ctx.tools.register(make_check_genesis_runtime_tool(ctx))
     ctx.tools.register(make_generate_smpl_motion_tool(ctx))
     ctx.tools.register(make_generate_humanoid_animation_tool(ctx))

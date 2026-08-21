@@ -13,4 +13,4 @@ def test_manifest_declares_humanoid_plugin_dependency():
 def test_manifest_declares_genesis_python_dependency():
     manifest = PluginManifest.from_file(Path(__file__).resolve().parents[1] / "witwin.toml")
 
-    assert "witwin-genesis>=0.1,<0.2" in manifest.dependencies
+    assert "witwin-genesis>=0.2,<0.3" in manifest.dependencies

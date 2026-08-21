@@ -1,12 +1,12 @@
 id = "witwin.genesis"
 name = "Genesis"
-version = "0.1.0"
+version = "0.2.0"
 author = "WiTwin Team"
 description = "Text-to-motion humanoid generation."
 homepage = ""
 repository = ""
 license = "MIT"
-dependencies = ["witwin-genesis>=0.1,<0.2"]
+dependencies = ["witwin-genesis>=0.2,<0.3"]
 pluginDependencies = ["wt_humanoid"]
 entry_point = "__init__.py"
 icon = "sparkles"
