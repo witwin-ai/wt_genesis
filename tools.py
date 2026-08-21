@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
+from importlib import metadata
 from typing import Any
+
+from packaging.specifiers import SpecifierSet
 
 from witwin_server.plugins.paths import default_project_dir
 from witwin_server.tools.base import Tool, ToolError, tool
@@ -93,6 +97,16 @@ _ANIMATION_INPUT_SCHEMA = {
             "type": "boolean",
             "description": "Whether the SMPL motion and timeline should loop. Default true.",
         },
+        "radar_surface_sites": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4096,
+            "description": "Optionally add a Radar surface scatterer with this many stable sites; requires the Radar Plugin.",
+        },
+        "radar_surface_seed": {
+            "type": "integer",
+            "description": "Deterministic Radar surface sampling seed. Default 0.",
+        },
     },
     "required": ["prompt"],
     "additionalProperties": False,
@@ -110,7 +124,11 @@ def make_check_genesis_runtime_tool(ctx: Any) -> Tool:
     )
     def check_genesis_runtime(args: dict[str, Any]) -> dict[str, object]:
         del args
-        return inspect_runtime().to_dict()
+        payload = inspect_runtime().to_dict()
+        radar_runtime = _inspect_radar_pipeline_runtime()
+        payload["radar_runtime"] = radar_runtime
+        payload["pipeline_ready"] = bool(payload["ready"] and radar_runtime["ready"])
+        return payload
 
     return check_genesis_runtime
 
@@ -201,6 +219,14 @@ def _run_generate_animation(ctx: Any, args: dict[str, Any], backend: Backend | N
         broadcast=_get_broadcast_for_server(server),
         serialize_object=_get_serializer(server, scene),
     )
+    radar_target = None
+    if args.get("radar_surface_sites") is not None:
+        radar_target = _attach_radar_surface_target(
+            scene,
+            result.body_object_id,
+            site_count=int(args["radar_surface_sites"]),
+            seed=int(args.get("radar_surface_seed", 0)),
+        )
     _save_generated_scene(server, scene)
     payload = result.to_dict()
     payload["scene_binding"] = {
@@ -208,8 +234,82 @@ def _run_generate_animation(ctx: Any, args: dict[str, Any], backend: Backend | N
         "motion_object_id": payload["motion_object_id"],
         "timeline_track": payload["timeline_track"],
     }
+    if radar_target is not None:
+        payload["scene_binding"]["radar_surface_target"] = radar_target
     return payload
 
+
+def _attach_radar_surface_target(
+    scene: Any,
+    body_object_id: str,
+    *,
+    site_count: int,
+    seed: int,
+) -> dict[str, Any]:
+    try:
+        from wt_radar.components import RadarScattererComponent
+    except Exception as exc:  # noqa: BLE001 - optional Plugin boundary
+        raise ToolError(
+            "Radar surface targeting was requested, but the Radar Plugin is unavailable",
+            code="radar_plugin_unavailable",
+        ) from exc
+    body_obj = scene.get_object(str(body_object_id))
+    if body_obj is None:
+        raise ToolError("generated humanoid body is missing", code="generated_body_missing")
+    scatterer = body_obj.get_component("RadarScatterer")
+    if scatterer is None:
+        scatterer = body_obj.add_component(RadarScattererComponent)
+    if scatterer is None:
+        raise ToolError("unable to attach RadarScatterer", code="radar_component_attach_failed")
+    scatterer.mode = "surface"
+    scatterer.surface_site_count = int(site_count)
+    scatterer.surface_seed = int(seed)
+    scatterer.enabled = True
+    return {
+        "object_id": str(body_obj.id),
+        "component": "RadarScatterer",
+        "mode": "surface",
+        "surface_site_count": int(site_count),
+        "surface_seed": int(seed),
+    }
+
+
+def _inspect_radar_pipeline_runtime() -> dict[str, Any]:
+    import torch
+
+    requirements = {
+        "witwin-radar": (">=0.3,<0.4", "witwin.radar"),
+        "witwin-channel": (">=0.5,<0.6", "witwin.channel"),
+        "rayd": (">=0.8,<0.9", "rayd.torch"),
+    }
+    versions = {}
+    issues = []
+    import_errors = {}
+    for package_name, (required, module_name) in requirements.items():
+        try:
+            version = metadata.version(package_name)
+        except metadata.PackageNotFoundError:
+            version = None
+        versions[package_name] = version
+        if version is None:
+            issues.append(f"{package_name} is not installed")
+        elif version not in SpecifierSet(required):
+            issues.append(f"{package_name} {version} is incompatible; expected {required}")
+        try:
+            importlib.import_module(module_name)
+        except Exception as exc:  # noqa: BLE001 - diagnostic must report native import failure
+            import_errors[module_name] = f"{type(exc).__name__}: {exc}"
+    cuda_available = bool(torch.cuda.is_available())
+    if not cuda_available:
+        issues.append("CUDA is unavailable for Radar sequence solving")
+    return {
+        "ready": not issues and not import_errors,
+        "cuda_available": cuda_available,
+        "cuda_device_count": int(torch.cuda.device_count()),
+        "versions": versions,
+        "import_errors": import_errors,
+        "issues": issues,
+    }
 
 def _get_scene(ctx: Any) -> Any:
     api = getattr(ctx, "api", None)

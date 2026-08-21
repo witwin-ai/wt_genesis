@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from dataclasses import dataclass
+from types import ModuleType
 
 import numpy as np
 import pytest
@@ -280,6 +282,64 @@ def test_generate_humanoid_animation_broadcasts_final_objects_and_timeline(tmp_p
     assert timeline_state["fps"] == pytest.approx(result.motion_asset.fps)
     assert any(track["path"] == result.timeline_track["path"] for track in timeline_state["tracks"])
 
+
+def test_generate_humanoid_animation_can_author_radar_surface_target(tmp_path, monkeypatch):
+    from witwin_server.core.components import (
+        Component,
+        bool_field,
+        component,
+        int_field,
+        string_field,
+    )
+    from witwin_server.core.scene import Scene
+    import wt_genesis.adapter.scene_animation as scene_animation
+    from wt_genesis.tools import make_generate_humanoid_animation_tool
+
+    @component(name="RadarScatterer")
+    class FakeRadarScattererComponent(Component):
+        enabled = bool_field(True)
+        mode = string_field("point")
+        surface_site_count = int_field(1)
+        surface_seed = int_field(0)
+
+    radar_package = ModuleType("wt_radar")
+    radar_package.__path__ = []
+    radar_components = ModuleType("wt_radar.components")
+    radar_components.RadarScattererComponent = FakeRadarScattererComponent
+    monkeypatch.setitem(sys.modules, "wt_radar", radar_package)
+    monkeypatch.setitem(sys.modules, "wt_radar.components", radar_components)
+    monkeypatch.setenv("WITWIN_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setattr(scene_animation, "build_smpl_skin_asset", lambda *args, **kwargs: _tiny_skin_asset())
+    scene = Scene(scene_id="main")
+    tool = make_generate_humanoid_animation_tool(
+        _FakeContext(scene), backend=_animated_backend
+    )
+
+    result = asyncio.run(
+        tool.call(
+            {
+                "prompt": "a person waves",
+                "motion_length": 0.2,
+                "device": -1,
+                "radar_surface_sites": 32,
+                "radar_surface_seed": 17,
+            }
+        )
+    )
+
+    body_obj = scene.get_object(result["body_object_id"])
+    scatterer = body_obj.get_component("RadarScatterer")
+    assert body_obj.get_component("SkinnedMesh") is not None
+    assert scatterer.mode == "surface"
+    assert int(scatterer.surface_site_count) == 32
+    assert int(scatterer.surface_seed) == 17
+    assert result["scene_binding"]["radar_surface_target"] == {
+        "object_id": body_obj.id,
+        "component": "RadarScatterer",
+        "mode": "surface",
+        "surface_site_count": 32,
+        "surface_seed": 17,
+    }
 
 def _tiny_skin_asset():
     from wt_humanoid.adapter.smpl_skinned import SMPLSkinAsset
