@@ -283,6 +283,36 @@ def test_generate_humanoid_animation_broadcasts_final_objects_and_timeline(tmp_p
     assert any(track["path"] == result.timeline_track["path"] for track in timeline_state["tracks"])
 
 
+def test_radar_surface_request_preflights_plugin_before_scene_mutation(monkeypatch):
+    from witwin_server.core.scene import Scene
+    from witwin_server.tools.base import ToolError
+    import wt_genesis.tools as genesis_tools
+
+    scene = Scene(scene_id="main")
+    generated = []
+
+    def unavailable():
+        raise ToolError("Radar unavailable", code="radar_plugin_unavailable")
+
+    monkeypatch.setattr(genesis_tools, "_load_radar_scatterer_component", unavailable)
+    monkeypatch.setattr(
+        genesis_tools,
+        "create_humanoid_animation",
+        lambda **kwargs: generated.append(kwargs),
+    )
+
+    with pytest.raises(ToolError) as exc_info:
+        genesis_tools._run_generate_animation(
+            _FakeContext(scene),
+            {"prompt": "a person waves", "radar_surface_sites": 8},
+            _animated_backend,
+        )
+
+    assert exc_info.value.code == "radar_plugin_unavailable"
+    assert generated == []
+    assert list(scene.objects.values()) == []
+
+
 def test_generate_humanoid_animation_can_author_radar_surface_target(tmp_path, monkeypatch):
     from witwin_server.core.components import (
         Component,

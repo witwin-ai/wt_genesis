@@ -198,6 +198,11 @@ def _run_generate_animation(ctx: Any, args: dict[str, Any], backend: Backend | N
     if scene is None:
         raise ToolError("no active scene", code="no_scene")
     server = _get_server(ctx)
+    radar_component_type = None
+    if args.get("radar_surface_sites") is not None:
+        # Fail before creating assets or mutating the Scene when the optional
+        # Radar Plugin dependency cannot satisfy the requested output.
+        radar_component_type = _load_radar_scatterer_component()
 
     result = create_humanoid_animation(
         scene=scene,
@@ -226,6 +231,7 @@ def _run_generate_animation(ctx: Any, args: dict[str, Any], backend: Backend | N
             result.body_object_id,
             site_count=int(args["radar_surface_sites"]),
             seed=int(args.get("radar_surface_seed", 0)),
+            component_type=radar_component_type,
         )
     _save_generated_scene(server, scene)
     payload = result.to_dict()
@@ -239,13 +245,7 @@ def _run_generate_animation(ctx: Any, args: dict[str, Any], backend: Backend | N
     return payload
 
 
-def _attach_radar_surface_target(
-    scene: Any,
-    body_object_id: str,
-    *,
-    site_count: int,
-    seed: int,
-) -> dict[str, Any]:
+def _load_radar_scatterer_component() -> Any:
     try:
         from wt_radar.components import RadarScattererComponent
     except Exception as exc:  # noqa: BLE001 - optional Plugin boundary
@@ -253,12 +253,24 @@ def _attach_radar_surface_target(
             "Radar surface targeting was requested, but the Radar Plugin is unavailable",
             code="radar_plugin_unavailable",
         ) from exc
+    return RadarScattererComponent
+
+
+def _attach_radar_surface_target(
+    scene: Any,
+    body_object_id: str,
+    *,
+    site_count: int,
+    seed: int,
+    component_type: Any = None,
+) -> dict[str, Any]:
+    component_type = component_type or _load_radar_scatterer_component()
     body_obj = scene.get_object(str(body_object_id))
     if body_obj is None:
         raise ToolError("generated humanoid body is missing", code="generated_body_missing")
     scatterer = body_obj.get_component("RadarScatterer")
     if scatterer is None:
-        scatterer = body_obj.add_component(RadarScattererComponent)
+        scatterer = body_obj.add_component(component_type)
     if scatterer is None:
         raise ToolError("unable to attach RadarScatterer", code="radar_component_attach_failed")
     scatterer.mode = "surface"
