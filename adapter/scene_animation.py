@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import contextmanager
+import math
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -17,6 +19,9 @@ from wt_humanoid.adapter.smpl_motion import load_smpl_motion
 from wt_humanoid.adapter.smpl_skinned import attach_smpl_skinned_mesh, build_smpl_skin_asset
 
 from witwin.genesis.motion_export import Backend, MotionExportResult, generate_motion_asset
+from .baked_playback import (
+    select_playback_keyframes, validate_playback_mode, verify_recorded_baked_playback,
+)
 
 
 @dataclass(frozen=True)
@@ -29,6 +34,7 @@ class SceneAnimationResult:
     timeline_track: dict[str, Any]
     root_motion_tracks: dict[str, Any]
     visual_mesh_cache: dict[str, Any]
+    playback: dict[str, Any]
     duration: float
     autoplay: bool
     loop: bool
@@ -44,6 +50,7 @@ class SceneAnimationResult:
                 "timeline_track": self.timeline_track,
                 "root_motion_tracks": self.root_motion_tracks,
                 "visual_mesh_cache": self.visual_mesh_cache,
+                "playback": self.playback,
                 "duration": self.duration,
                 "autoplay": self.autoplay,
                 "loop": self.loop,
@@ -68,6 +75,7 @@ def create_humanoid_animation(
     position: Sequence[float] | None = None,
     autoplay: bool = False,
     loop: bool = True,
+    playback_mode: str = "legacy_controller",
     backend: Backend | None = None,
     mesh_assets: Any = None,
     broadcast: Callable[[dict[str, Any]], None] | None = None,
@@ -76,6 +84,11 @@ def create_humanoid_animation(
     """Generate an SMPL asset, bind it to wt_humanoid objects, and key timeline playback."""
     if scene is None:
         raise ValueError("scene is required")
+    playback_mode = validate_playback_mode(playback_mode)
+    require_write = getattr(scene, "_require_author_write", None)
+    if callable(require_write):
+        require_write("witwin.genesis.generate_humanoid_animation")
+    position_value = _normalize_position(position)
 
     motion_asset = generate_motion_asset(
         project_dir,
@@ -88,7 +101,6 @@ def create_humanoid_animation(
         output_name=output_name,
         backend=backend,
     )
-    position_value = _normalize_position(position)
     root_motion = _build_root_motion_tracks(motion_asset, position_value)
 
     body_obj, body = _create_smpl_body(
@@ -96,24 +108,17 @@ def create_humanoid_animation(
         root_motion["positions"][0],
         root_motion["rotations"][0],
     )
-    scene.add_object(body_obj)
 
     motion_obj, motion = _create_smpl_motion(
         motion_name or _default_name("Genesis SMPL Motion", prompt),
         position_value,
     )
-    scene.add_object(motion_obj)
 
     motion.motion_path = motion_asset.motion_path
     motion.pose_key = motion_asset.pose_key
     motion.betas_key = motion_asset.betas_key
     motion.trans_key = motion_asset.trans_key
     motion.loop = "on" if loop else "off"
-    motion.target_body = {
-        "object_id": body_obj.id,
-        "object_name": body_obj.name,
-        "component_type": "SMPLBody",
-    }
     motion.load_motion()
     motion.current_frame = 0
     motion.apply_current_frame(body)
@@ -124,105 +129,182 @@ def create_humanoid_animation(
         gender=body.gender,
         betas=body.shape,
     )
-    skinned_status = attach_smpl_skinned_mesh(
-        scene,
-        body_obj,
-        body,
-        model_root=body.model_root,
-        gender=body.gender,
-        shape=body.shape,
-        asset=skin_asset,
-    )
-    body.sync_skinned_mesh_pose()
-
-    timeline = _ensure_timeline(scene)
-    timeline.fps = motion_asset.fps
-    timeline.is_looping = bool(loop)
-    duration = _motion_duration(motion_asset.frame_count, motion_asset.fps)
-    timeline.duration = duration
-
-    keyframes = [
-        {
-            "object_id": motion_obj.id,
-            "component_name": "SMPLMotion",
-            "field_name": "current_frame",
-            "value": 0,
-            "time": 0.0,
-            "interpolation": InterpolationType.LINEAR,
-        },
-        {
-            "object_id": motion_obj.id,
-            "component_name": "SMPLMotion",
-            "field_name": "current_frame",
-            "value": max(0, motion_asset.frame_count - 1),
-            "time": duration,
-            "interpolation": InterpolationType.LINEAR,
-        },
-    ]
-    for frame in range(motion_asset.frame_count):
-        time = frame / motion_asset.fps
-        keyframes.append(
-            {
-                "object_id": body_obj.id,
-                "component_name": "Transform",
-                "field_name": "position",
-                "value": root_motion["positions"][frame],
-                "time": time,
-                "interpolation": InterpolationType.LINEAR,
-            }
+    # Model loading and motion validation are completed on detached objects.
+    # A missing licensed SMPL file must not leave half-created scene objects.
+    created_ids: list[str] = []
+    with _new_animation_transaction(scene, created_ids):
+        body_obj.id = scene.allocate_id(body_obj.name)
+        created_ids.append(body_obj.id)
+        scene.add_object(body_obj)
+        motion_obj.id = scene.allocate_id(motion_obj.name)
+        created_ids.append(motion_obj.id)
+        scene.add_object(motion_obj)
+        motion.target_body = {
+            "object_id": body_obj.id,
+            "object_name": body_obj.name,
+            "component_type": "SMPLBody",
+        }
+        bone_ids = [f"{body_obj.id}-smpl-bone-{index:02d}"
+                    for index in range(len(skin_asset.joint_positions))]
+        if any(scene.get_object(bone_id) is not None for bone_id in bone_ids):
+            raise ValueError("generated SMPL bone ids collide with existing scene objects")
+        created_ids.extend(bone_ids)
+        skinned_status = attach_smpl_skinned_mesh(
+            scene,
+            body_obj,
+            body,
+            model_root=body.model_root,
+            gender=body.gender,
+            shape=body.shape,
+            asset=skin_asset,
         )
-        keyframes.append(
+        body.sync_skinned_mesh_pose()
+
+        timeline = _ensure_timeline(scene)
+        existing_tracks = bool(timeline.clip.tracks)
+        if not existing_tracks:
+            timeline.fps = motion_asset.fps
+            timeline.is_looping = bool(loop)
+        duration = _motion_duration(motion_asset.frame_count, motion_asset.fps)
+        retained_end = timeline.clip.get_keyframe_range()[1] if existing_tracks else 0.0
+        timeline.duration = max(timeline.duration, retained_end, duration) if existing_tracks else duration
+
+        keyframes = [
             {
-                "object_id": body_obj.id,
-                "component_name": "Transform",
-                "field_name": "rotation",
-                "value": root_motion["rotations"][frame],
-                "time": time,
+                "object_id": motion_obj.id,
+                "component_name": "SMPLMotion",
+                "field_name": "current_frame",
+                "value": 0,
+                "time": 0.0,
                 "interpolation": InterpolationType.LINEAR,
-            }
+            },
+            {
+                "object_id": motion_obj.id,
+                "component_name": "SMPLMotion",
+                "field_name": "current_frame",
+                "value": max(0, motion_asset.frame_count - 1),
+                "time": duration,
+                "interpolation": InterpolationType.LINEAR,
+            },
+        ]
+        for frame in range(motion_asset.frame_count):
+            time = frame / motion_asset.fps
+            keyframes.append(
+                {
+                    "object_id": body_obj.id,
+                    "component_name": "Transform",
+                    "field_name": "position",
+                    "value": root_motion["positions"][frame],
+                    "time": time,
+                    "interpolation": InterpolationType.LINEAR,
+                }
+            )
+            keyframes.append(
+                {
+                    "object_id": body_obj.id,
+                    "component_name": "Transform",
+                    "field_name": "rotation",
+                    "value": root_motion["rotations"][frame],
+                    "time": time,
+                    "interpolation": InterpolationType.LINEAR,
+                }
+            )
+        skeleton_track_count, skeleton_keyframes = _build_skeleton_rotation_keyframes(body_obj, motion_asset)
+        keyframes.extend(skeleton_keyframes)
+        keyframes, playback = select_playback_keyframes(
+            keyframes,
+            playback_mode=playback_mode,
+            body_object_id=body_obj.id,
+            motion_object_id=motion_obj.id,
+            bone_ids=body_obj.get_component("SkinnedMesh").bone_ids,
+            frame_count=motion_asset.frame_count,
+            fps=motion_asset.fps,
         )
-    skeleton_track_count, skeleton_keyframes = _build_skeleton_rotation_keyframes(body_obj, motion_asset)
-    keyframes.extend(skeleton_keyframes)
-    timeline.record_keyframes(keyframes)
-    track = timeline.clip.get_track(motion_obj.id, "SMPLMotion", "current_frame")
-    timeline.set_time(0.0, apply_to_scene=True)
-    visual_mesh_cache = _skinned_mesh_visual_status(skinned_status, skeleton_track_count=skeleton_track_count)
-    if autoplay:
-        timeline.play()
+        timeline.record_keyframes(keyframes)
+        verify_recorded_baked_playback(timeline, keyframes, playback)
+        playback_track = ((body_obj.id, "Transform", "position")
+                          if playback_mode == "baked_transforms"
+                          else (motion_obj.id, "SMPLMotion", "current_frame"))
+        track = timeline.clip.get_track(*playback_track)
+        if not existing_tracks:
+            timeline.set_time(0.0, apply_to_scene=True)
+        visual_mesh_cache = _skinned_mesh_visual_status(skinned_status, skeleton_track_count=skeleton_track_count)
+        if autoplay:
+            timeline.play()
 
-    _broadcast_live_scene_update(
-        scene=scene,
-        body_obj=body_obj,
-        motion_obj=motion_obj,
-        skinned_status=skinned_status,
-        timeline=timeline,
-        broadcast=broadcast,
-        serialize_object=serialize_object,
-    )
+        _broadcast_live_scene_update(
+            scene=scene,
+            body_obj=body_obj,
+            motion_obj=motion_obj,
+            skinned_status=skinned_status,
+            timeline=timeline,
+            broadcast=broadcast,
+            serialize_object=serialize_object,
+        )
 
-    return SceneAnimationResult(
-        ok=True,
-        motion_asset=motion_asset,
-        body_object_id=body_obj.id,
-        motion_object_id=motion_obj.id,
-        visual_mesh_object_id=body_obj.id,
-        timeline_track={
-            "path": track.path if track else "",
-            "object_id": motion_obj.id,
-            "component_name": "SMPLMotion",
-            "field_name": "current_frame",
-            "keyframe_count": len(track.keyframes) if track else 0,
-        },
-        root_motion_tracks={
-            "position_track": f"{body_obj.id}/Transform/position",
-            "rotation_track": f"{body_obj.id}/Transform/rotation",
-            "keyframe_count": motion_asset.frame_count,
-        },
-        visual_mesh_cache=visual_mesh_cache,
-        duration=duration,
-        autoplay=bool(autoplay),
-        loop=bool(loop),
-    )
+        return SceneAnimationResult(
+            ok=True,
+            motion_asset=motion_asset,
+            body_object_id=body_obj.id,
+            motion_object_id=motion_obj.id,
+            visual_mesh_object_id=body_obj.id,
+            timeline_track={
+                "path": track.path if track else "",
+                "object_id": playback_track[0],
+                "component_name": playback_track[1],
+                "field_name": playback_track[2],
+                "keyframe_count": len(track.keyframes) if track else 0,
+            },
+            root_motion_tracks={
+                "position_track": f"{body_obj.id}/Transform/position",
+                "rotation_track": f"{body_obj.id}/Transform/rotation",
+                "keyframe_count": motion_asset.frame_count,
+            },
+            visual_mesh_cache=visual_mesh_cache,
+            playback=playback,
+            duration=duration,
+            autoplay=bool(autoplay),
+            loop=bool(loop),
+        )
+
+
+@contextmanager
+def _new_animation_transaction(scene: Any, created_ids: list[str]):
+    """Roll back only this new animation, never restore/replace other objects.
+
+    Generated NPZ assets are deliberately retained for diagnosis/reuse after a
+    scene-authoring failure. Existing scene objects and tracks are not deleted.
+    """
+    original_timeline = getattr(scene, "timeline_manager", None)
+    original_state = None if original_timeline is None else {
+        field: getattr(original_timeline, field)
+        for field in ("fps", "duration", "is_looping", "current_time", "is_playing", "is_recording")
+    }
+    # Authoring components emits change notifications; an armed recorder must
+    # not add accidental keys at the user's current playhead during construction.
+    if original_timeline is not None:
+        original_timeline.is_recording = False
+    try:
+        yield
+    except Exception:
+        timeline = getattr(scene, "timeline_manager", None)
+        if timeline is not None:
+            for object_id in created_ids:
+                timeline.remove_object_tracks(object_id)
+        for object_id in reversed(created_ids):
+            if scene.get_object(object_id) is not None:
+                scene.remove_object(object_id)
+        if original_timeline is None:
+            if timeline is not None:
+                scene.off("component_updated", timeline._on_component_updated)
+            scene.timeline_manager = None
+        else:
+            for field, value in original_state.items():
+                setattr(original_timeline, field, value)
+        raise
+    finally:
+        if original_timeline is not None:
+            original_timeline.is_recording = original_state["is_recording"]
 
 
 def _broadcast_live_scene_update(
@@ -348,6 +430,13 @@ def _build_root_motion_tracks(motion_asset: MotionExportResult, position: list[f
         trans_key=motion_asset.trans_key,
     )
     frame_count = motion.frame_count
+    if frame_count != motion_asset.frame_count or frame_count <= 0:
+        raise ValueError("generated motion frame count does not match its asset metadata")
+    if not math.isfinite(motion_asset.fps) or motion_asset.fps <= 0:
+        raise ValueError("generated motion fps must be finite and positive")
+    if any(not np.isfinite(values).all()
+           for values in (motion.poses, motion.betas, motion.translations)):
+        raise ValueError("generated motion contains nonfinite pose, shape, or root values")
     translations = np.asarray(motion.translations, dtype=np.float32).reshape(frame_count, 3)
     base_position = np.asarray(position, dtype=np.float32).reshape(1, 3)
     relative_translation = translations - translations[0].reshape(1, 3)
@@ -423,6 +512,8 @@ def _normalize_position(position: Sequence[float] | None) -> list[float]:
     value = [float(item) for item in position]
     if len(value) != 3:
         raise ValueError("position must contain exactly 3 numbers")
+    if not all(math.isfinite(item) for item in value):
+        raise ValueError("position must contain finite numbers")
     return value
 
 

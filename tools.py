@@ -74,6 +74,15 @@ _ANIMATION_INPUT_SCHEMA = {
     "type": "object",
     "properties": {
         **_INPUT_SCHEMA["properties"],
+        "scene_id": {
+            "type": "string", "minLength": 1,
+            "description": "Exact already-open target scene. A missing scene never falls back to another room.",
+        },
+        "playback_mode": {
+            "type": "string", "enum": ["legacy_controller", "baked_transforms"],
+            "default": "legacy_controller",
+            "description": "Use baked_transforms for the current mesh-based Radar animation input: only root/bone Transform tracks drive playback. SMPL parameter components remain source metadata, not time-evaluated parametric solver input. Legacy retains the upstream controller track.",
+        },
         "body_name": {
             "type": "string",
             "description": "Optional scene object name for the generated SMPL body.",
@@ -128,6 +137,10 @@ def make_check_genesis_runtime_tool(ctx: Any) -> Tool:
         radar_runtime = _inspect_radar_pipeline_runtime()
         payload["radar_runtime"] = radar_runtime
         payload["pipeline_ready"] = bool(payload["ready"] and radar_runtime["ready"])
+        # Preserve the legacy key, but do not present a package check as a
+        # successful scene measurement or confirmation of optional interfaces.
+        payload["readiness_scope"] = "packages_models_native_imports_and_cuda_only"
+        payload["human_radar_validation"] = "not_run"
         return payload
 
     return check_genesis_runtime
@@ -194,7 +207,7 @@ def _run_generate(args: dict[str, Any], backend: Backend | None) -> dict[str, An
 
 
 def _run_generate_animation(ctx: Any, args: dict[str, Any], backend: Backend | None) -> dict[str, Any]:
-    scene = _get_scene(ctx)
+    scene = _get_scene(ctx, args.get("scene_id"))
     if scene is None:
         raise ToolError("no active scene", code="no_scene")
     server = _get_server(ctx)
@@ -219,6 +232,7 @@ def _run_generate_animation(ctx: Any, args: dict[str, Any], backend: Backend | N
         position=args.get("position"),
         autoplay=bool(args.get("autoplay", False)),
         loop=bool(args.get("loop", True)),
+        playback_mode=str(args.get("playback_mode", "legacy_controller")),
         backend=backend,
         mesh_assets=getattr(server, "mesh_assets", None),
         broadcast=_get_broadcast_for_server(server),
@@ -235,6 +249,7 @@ def _run_generate_animation(ctx: Any, args: dict[str, Any], backend: Backend | N
         )
     _save_generated_scene(server, scene)
     payload = result.to_dict()
+    payload["scene_id"] = getattr(scene, "scene_id", None)
     payload["scene_binding"] = {
         "body_object_id": payload["body_object_id"],
         "motion_object_id": payload["motion_object_id"],
@@ -250,7 +265,9 @@ def _load_radar_scatterer_component() -> Any:
         from wt_radar.components import RadarScattererComponent
     except Exception as exc:  # noqa: BLE001 - optional Plugin boundary
         raise ToolError(
-            "Radar surface targeting was requested, but the Radar Plugin is unavailable",
+            "Radar surface targeting requires RadarScattererComponent, which this installed "
+            "Radar Plugin does not expose or could not import. This is an optional interface; "
+            "it does not mean that the existing Radar sensor is unavailable.",
             code="radar_plugin_unavailable",
         ) from exc
     return RadarScattererComponent
@@ -295,13 +312,22 @@ def _inspect_radar_pipeline_runtime() -> dict[str, Any]:
         "rayd": (">=0.8,<0.9", "rayd.torch"),
     }
     versions = {}
+    distributions = {}
     issues = []
     import_errors = {}
     for package_name, (required, module_name) in requirements.items():
-        try:
-            version = metadata.version(package_name)
-        except metadata.PackageNotFoundError:
-            version = None
+        version = None
+        # The Windows RayD wheel is distributed as rayd-torch but imports as
+        # rayd.torch. Keep the existing logical diagnostic key and report the
+        # distribution actually found; an import check is still mandatory.
+        candidates = ("rayd", "rayd-torch") if package_name == "rayd" else (package_name,)
+        for distribution in candidates:
+            try:
+                version = metadata.version(distribution)
+            except metadata.PackageNotFoundError:
+                continue
+            distributions[package_name] = distribution
+            break
         versions[package_name] = version
         if version is None:
             issues.append(f"{package_name} is not installed")
@@ -319,11 +345,26 @@ def _inspect_radar_pipeline_runtime() -> dict[str, Any]:
         "cuda_available": cuda_available,
         "cuda_device_count": int(torch.cuda.device_count()),
         "versions": versions,
+        "distributions": distributions,
         "import_errors": import_errors,
         "issues": issues,
     }
 
-def _get_scene(ctx: Any) -> Any:
+def _get_scene(ctx: Any, scene_id: str | None = None) -> Any:
+    if scene_id is not None:
+        requested = str(scene_id).strip()
+        if not requested:
+            raise ToolError("scene_id must not be empty", code="missing_scene")
+        server = _get_server(ctx)
+        getter = getattr(server, "get_scene", None)
+        if callable(getter):
+            scene = getter(requested)
+        else:
+            current = _get_scene(ctx)
+            scene = current if str(getattr(current, "scene_id", "")) == requested else None
+        if scene is None:
+            raise ToolError(f"scene not found or no longer open: {requested}", code="missing_scene")
+        return scene
     api = getattr(ctx, "api", None)
     scene = getattr(api, "scene", None)
     if scene is not None:

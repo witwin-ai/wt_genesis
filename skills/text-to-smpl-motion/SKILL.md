@@ -10,11 +10,13 @@ Use `witwin.genesis.generate_smpl_motion` only when the user asks for a standalo
 
 Workflow:
 
-1. For scene animation requests, call `witwin.genesis.generate_humanoid_animation` with the user's prompt.
-2. Pass `autoplay: true` if the user asks to play the timeline immediately.
-3. The tool creates an `SMPLBody`, an `SMPLMotion`, binds the generated `.npz` file, and keys `SMPLMotion.current_frame` plus the body object's `Transform.position` and `Transform.rotation` root motion on the timeline.
-4. If the user only wants a reusable file, call `witwin.genesis.generate_smpl_motion`; use its returned `motion_path` with `pose_key='smpl_pose'`, `betas_key='shape'`, and `trans_key='root'`.
-5. If the user asks for a baked Radar response, pass `radar_surface_sites` (default recommendation: 128) and optionally `radar_surface_seed` to `generate_humanoid_animation`. Ensure a configured `Radar` component is in the Scene, then use the Timeline bake producer `witwin.radar.simulate`.
-6. After bake completion, open the dataset in Timeline Replay. The Radar `signal_source` binding follows the playhead automatically; use the range-Doppler channel for the standard heatmap unless the user asks for raw or point-cloud output.
+1. Inspect `witwin.genesis.check_genesis_runtime` before generation. Missing licensed models are blockers; do not invent model paths or create placeholder files. Runtime readiness is not an end-to-end measurement result.
+2. For scene animation requests, call `witwin.genesis.generate_humanoid_animation` with the user's prompt and the exact already-open `scene_id`. Unknown/closed scenes must not silently fall back to another room.
+3. Pass `autoplay: true` only if the user asks to play immediately. The result identifies the new body/controller, source asset and actual motion interval. Preserve existing cats and their timelines.
+4. For the current mesh-based Radar animation tools, explicitly select `playback_mode: "baked_transforms"`. This writes validated root/bone Transform tracks without a competing controller track. Source SMPL parameter components remain initial-pose metadata; do not describe this as dynamic parametric SMPL export.
+5. Use the installed `witwin.radar.ensure_sensor`, `plan_animation_measurement`, `submit_animation_measurement`, `get_simulation`, `verify_result`, `prepare_replay` and `export_result` tools according to their schemas. Carry forward the returned body/operation IDs. If a required tool is unavailable, report that blocker instead of guessing a replacement. Existing multiple-animated-target restrictions still apply; do not silently delete another actor's animation.
+6. `radar_surface_sites` is a separate optional integration requiring `RadarScattererComponent`. Do not request it merely because the basic Radar sensor exists. Only use the surface-scatter Timeline producer path if that interface is actually available.
+7. Report generation, replay preparation, GPU measurement validation and export as separate results. Do not claim collision-free or physically calibrated human scattering from a successful import or interface test.
+8. If the user only wants a reusable file, call `witwin.genesis.generate_smpl_motion`; use its returned `motion_path` with `pose_key='smpl_pose'`, `betas_key='shape'`, and `trans_key='root'`.
 
 Prefer visible Project assets under `assets/motions/` for generated motion files. Do not write generated motion assets into `.witwin/` unless the user explicitly wants disposable runtime output.

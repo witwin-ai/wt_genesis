@@ -81,6 +81,8 @@ def test_check_genesis_runtime_tool_returns_structured_status(monkeypatch):
     assert result["ready"] is False
     assert result["missing_smpl_files"] == ["SMPL_NEUTRAL.pkl"]
     assert result["pipeline_ready"] is False
+    assert result["readiness_scope"] == "packages_models_native_imports_and_cuda_only"
+    assert result["human_radar_validation"] == "not_run"
     assert result["radar_runtime"]["issues"] == ["CUDA is unavailable"]
 
 
