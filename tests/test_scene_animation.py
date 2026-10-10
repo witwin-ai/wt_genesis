@@ -129,6 +129,52 @@ def test_generate_humanoid_animation_tool_saves_and_broadcasts_final_scene(tmp_p
     assert any(track["path"] == result["timeline_track"]["path"] for track in timeline_state["tracks"])
 
 
+def test_generate_humanoid_animation_persists_skinned_mesh_for_cold_load(tmp_path, monkeypatch):
+    from witwin_server.core.scene import Scene
+    from witwin_server.persistence import PersistenceManager
+    import wt_genesis.adapter.scene_animation as scene_animation
+    from wt_genesis.tools import make_generate_humanoid_animation_tool
+
+    monkeypatch.setenv("WITWIN_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setattr(scene_animation, "build_smpl_skin_asset", lambda *args, **kwargs: _tiny_skin_asset())
+    scene = Scene(scene_id="persistent_human")
+
+    class PersistentServer(_FakeServer):
+        def __init__(self, active_scene):
+            super().__init__(active_scene)
+            self.verbose = False
+            self.scenes = {active_scene.scene_id: active_scene}
+            self.persistence = PersistenceManager(self)
+
+    server = PersistentServer(scene)
+    tool = make_generate_humanoid_animation_tool(
+        _FakeContext(scene, server=server), backend=_animated_backend
+    )
+
+    result = asyncio.run(
+        tool.call(
+            {
+                "prompt": "a person waves",
+                "motion_length": 0.2,
+                "device": -1,
+                "output_name": "persistent wave",
+                "autoplay": False,
+            }
+        )
+    )
+
+    cold_scene = server.persistence.load_scene_by_id(scene.scene_id)
+    cold_body = cold_scene.get_object(result["body_object_id"])
+    cold_mesh = cold_body.get_component("SkinnedMesh")
+    cold_data = cold_mesh.get_mesh_data()
+
+    assert cold_mesh.source["storage"] == "scene_binary"
+    assert cold_data["vertices"]
+    assert cold_data["faces"]
+    assert cold_data["skin_indices"]
+    assert cold_data["skin_weights"]
+
+
 def test_generate_humanoid_animation_keys_root_motion_on_body_transform(tmp_path, monkeypatch):
     from scipy.spatial.transform import Rotation
     from witwin_server.core.scene import Scene
