@@ -307,7 +307,7 @@ def _inspect_radar_pipeline_runtime() -> dict[str, Any]:
     import torch
 
     requirements = {
-        "witwin-radar": (">=0.3,<0.4", "witwin.radar"),
+        "witwin-radar": (">=0.3,<0.5", "witwin.radar"),
         "witwin-channel": (">=0.5,<0.6", "witwin.channel"),
         "rayd": (">=0.8,<0.9", "rayd.torch"),
     }

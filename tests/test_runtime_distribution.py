@@ -28,3 +28,20 @@ def test_windows_rayd_distribution_is_not_reported_missing(monkeypatch):
     result = tools._inspect_radar_pipeline_runtime()
     assert not result['ready']
     assert result['import_errors']['rayd.torch'] == 'OSError: native DLL missing'
+
+
+def test_current_radar_runtime_is_accepted(monkeypatch):
+    versions = {'witwin-radar': '0.4.1', 'witwin-channel': '0.5.0', 'rayd-torch': '0.8.0'}
+    monkeypatch.setattr(
+        tools.metadata,
+        'version',
+        lambda name: versions[name] if name in versions else (_ for _ in ()).throw(tools.metadata.PackageNotFoundError),
+    )
+    monkeypatch.setattr(tools.importlib, 'import_module', lambda name: object())
+    monkeypatch.setattr(torch.cuda, 'is_available', lambda: True)
+    monkeypatch.setattr(torch.cuda, 'device_count', lambda: 1)
+
+    result = tools._inspect_radar_pipeline_runtime()
+
+    assert result['ready'] is True
+    assert result['issues'] == []
