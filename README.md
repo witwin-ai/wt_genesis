@@ -1,8 +1,9 @@
 # Genesis Plugin
 
 `wt_genesis` generates an SMPL animation, authors it into the current Scene,
-and keys the Timeline. The optional Radar integration adds stable surface
-scatter sites to the generated skinned body.
+and keys the Timeline. WT Radar 0.4 consumes the existing hydrated
+`SkinnedMesh` and baked Transform tracks; Genesis does not add a second
+Radar-specific target component.
 
 ## Preflight and scene animation
 
@@ -26,8 +27,8 @@ For the current `witwin.radar.submit_animation_measurement` tool path:
 
 1. Enable Genesis, Humanoid and Radar and inspect runtime readiness.
 2. Generate the human with an explicit `scene_id` and
-   `playback_mode: "baked_transforms"`. Omit `radar_surface_sites` unless the
-   installed Radar Plugin actually exposes `RadarScattererComponent`.
+   `playback_mode: "baked_transforms"`. Retain the returned
+   `scene_binding.radar_target_contract` and target object ID.
 3. Retain the returned body object ID and motion interval. Use the installed
    Radar tools to ensure a sensor and plan the measurement against that body;
    inspect the plan before submitting. Do not invent object IDs or tool names.
@@ -49,25 +50,9 @@ tests are not a validation of human motion quality, collision avoidance or
 calibrated human electromagnetic scattering. A real licensed-model human
 generation and GPU measurement must be tested separately.
 
-## Optional surface-scatter producer interface
-
-The sequence below requires an installed Radar version that supplies
-`RadarScattererComponent` and the corresponding Timeline producer. It is not
-interchangeable with the mesh-based animation tool path above. If that optional
-component is absent, requesting `radar_surface_sites` fails before generation.
-
-1. Enable the Genesis, Humanoid, and Radar Plugins for the Project.
-2. Call `witwin.genesis.generate_humanoid_animation` with
-   `radar_surface_sites` (128 is a practical starting point) and an optional
-   `radar_surface_seed`.
-3. Add/configure a `Radar` component in the Scene if one is not already
-   present.
-4. Use **Bake over timeline**. The `witwin.radar.simulate` producer samples the
-   complete Timeline, derives stable surface velocities, and emits the selected
-   channel (range-Doppler by default).
-5. Open the registered dataset in Timeline Replay. The generated Radar
-   component's `signal_source` is attached automatically, so the existing
-   heatmap follows the replay playhead.
+WT Radar 0.4 selects stable sites and owns the target site budget on its Radar
+settings object. A target-side `RadarScattererComponent`, `radar_surface_sites`,
+or `radar_surface_seed` is not part of this interface.
 
 The Genesis runtime tool reports asset/package readiness separately from the
 Radar/Channel/RayD/CUDA runtime. It recognizes the Windows `rayd-torch`

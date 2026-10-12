@@ -106,16 +106,6 @@ _ANIMATION_INPUT_SCHEMA = {
             "type": "boolean",
             "description": "Whether the SMPL motion and timeline should loop. Default true.",
         },
-        "radar_surface_sites": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 4096,
-            "description": "Optionally add a Radar surface scatterer with this many stable sites; requires the Radar Plugin.",
-        },
-        "radar_surface_seed": {
-            "type": "integer",
-            "description": "Deterministic Radar surface sampling seed. Default 0.",
-        },
     },
     "required": ["prompt"],
     "additionalProperties": False,
@@ -211,12 +201,6 @@ def _run_generate_animation(ctx: Any, args: dict[str, Any], backend: Backend | N
     if scene is None:
         raise ToolError("no active scene", code="no_scene")
     server = _get_server(ctx)
-    radar_component_type = None
-    if args.get("radar_surface_sites") is not None:
-        # Fail before creating assets or mutating the Scene when the optional
-        # Radar Plugin dependency cannot satisfy the requested output.
-        radar_component_type = _load_radar_scatterer_component()
-
     result = create_humanoid_animation(
         scene=scene,
         project_dir=default_project_dir(),
@@ -238,15 +222,6 @@ def _run_generate_animation(ctx: Any, args: dict[str, Any], backend: Backend | N
         broadcast=_get_broadcast_for_server(server),
         serialize_object=_get_serializer(server, scene),
     )
-    radar_target = None
-    if args.get("radar_surface_sites") is not None:
-        radar_target = _attach_radar_surface_target(
-            scene,
-            result.body_object_id,
-            site_count=int(args["radar_surface_sites"]),
-            seed=int(args.get("radar_surface_seed", 0)),
-            component_type=radar_component_type,
-        )
     _save_generated_scene(server, scene)
     payload = result.to_dict()
     payload["scene_id"] = getattr(scene, "scene_id", None)
@@ -254,53 +229,15 @@ def _run_generate_animation(ctx: Any, args: dict[str, Any], backend: Backend | N
         "body_object_id": payload["body_object_id"],
         "motion_object_id": payload["motion_object_id"],
         "timeline_track": payload["timeline_track"],
+        "radar_target_contract": {
+            "version": "studio_skinned_mesh_baked_transforms_v1",
+            "target_object_id": payload["body_object_id"],
+            "component": "SkinnedMesh",
+            "required_playback_mode": "baked_transforms",
+            "site_budget_owner": "witwin.radar.target_site_budget",
+        },
     }
-    if radar_target is not None:
-        payload["scene_binding"]["radar_surface_target"] = radar_target
     return payload
-
-
-def _load_radar_scatterer_component() -> Any:
-    try:
-        from wt_radar.components import RadarScattererComponent
-    except Exception as exc:  # noqa: BLE001 - optional Plugin boundary
-        raise ToolError(
-            "Radar surface targeting requires RadarScattererComponent, which this installed "
-            "Radar Plugin does not expose or could not import. This is an optional interface; "
-            "it does not mean that the existing Radar sensor is unavailable.",
-            code="radar_plugin_unavailable",
-        ) from exc
-    return RadarScattererComponent
-
-
-def _attach_radar_surface_target(
-    scene: Any,
-    body_object_id: str,
-    *,
-    site_count: int,
-    seed: int,
-    component_type: Any = None,
-) -> dict[str, Any]:
-    component_type = component_type or _load_radar_scatterer_component()
-    body_obj = scene.get_object(str(body_object_id))
-    if body_obj is None:
-        raise ToolError("generated humanoid body is missing", code="generated_body_missing")
-    scatterer = body_obj.get_component("RadarScatterer")
-    if scatterer is None:
-        scatterer = body_obj.add_component(component_type)
-    if scatterer is None:
-        raise ToolError("unable to attach RadarScatterer", code="radar_component_attach_failed")
-    scatterer.mode = "surface"
-    scatterer.surface_site_count = int(site_count)
-    scatterer.surface_seed = int(seed)
-    scatterer.enabled = True
-    return {
-        "object_id": str(body_obj.id),
-        "component": "RadarScatterer",
-        "mode": "surface",
-        "surface_site_count": int(site_count),
-        "surface_seed": int(seed),
-    }
 
 
 def _inspect_radar_pipeline_runtime() -> dict[str, Any]:
