@@ -22,7 +22,7 @@ from witwin.genesis.motion_export import Backend, MotionExportResult, generate_m
 from .baked_playback import (
     select_playback_keyframes, validate_playback_mode, verify_recorded_baked_playback,
 )
-from .trajectory_clearance import validate_humanoid_trajectory
+from .trajectory_clearance import HumanoidTrajectoryBlocked, validate_humanoid_trajectory
 
 
 @dataclass(frozen=True)
@@ -84,6 +84,7 @@ def create_humanoid_animation(
     broadcast: Callable[[dict[str, Any]], None] | None = None,
     serialize_object: Callable[[Any], dict[str, Any]] | None = None,
     geometry_reader: Callable[[Any], Sequence[dict[str, Any]]] | None = None,
+    body_validator: Callable[[Any, str, float], dict[str, Any]] | None = None,
 ) -> SceneAnimationResult:
     """Generate an SMPL asset, bind it to wt_humanoid objects, and key timeline playback."""
     if scene is None:
@@ -239,6 +240,10 @@ def create_humanoid_animation(
         )
         timeline.record_keyframes(keyframes)
         verify_recorded_baked_playback(timeline, keyframes, playback)
+        if body_validator is not None:
+            trajectory_clearance = _validated_body_clearance(
+                body_validator(scene, body_obj.id, duration)
+            )
         playback_track = ((body_obj.id, "Transform", "position")
                           if playback_mode == "baked_transforms"
                           else (motion_obj.id, "SMPLMotion", "current_frame"))
@@ -258,7 +263,6 @@ def create_humanoid_animation(
             broadcast=broadcast,
             serialize_object=serialize_object,
         )
-
         return SceneAnimationResult(
             ok=True,
             motion_asset=motion_asset,
@@ -284,6 +288,44 @@ def create_humanoid_animation(
             autoplay=bool(autoplay),
             loop=bool(loop),
         )
+
+
+def _validated_body_clearance(report: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(report, dict) or report.get("ok") is not True:
+        raise ValueError("humanoid body validator returned no successful evidence")
+    contacts = list(report.get("contacts") or ())
+    blocking = []
+    support = []
+    for contact in contacts:
+        label = f"{contact.get('obstacle_id', '')} {contact.get('obstacle', '')}".lower()
+        penetration = float(contact.get("penetration_m") or 0.0)
+        if any(name in label for name in ("floor", "rug", "carpet")) and penetration <= 0.02:
+            support.append(contact)
+        else:
+            blocking.append(contact)
+    if blocking:
+        blockers = [
+            {
+                "object_id": str(contact.get("obstacle_id") or contact.get("obstacle") or "unknown"),
+                "name": str(contact.get("obstacle") or contact.get("obstacle_id") or "unknown"),
+                "time": contact.get("time"),
+                "body_part": contact.get("body_part"),
+                "penetration_m": contact.get("penetration_m"),
+                "kind": contact.get("kind"),
+                "segment_index": -1,
+            }
+            for contact in blocking[:20]
+        ]
+        raise HumanoidTrajectoryBlocked(blockers)
+    return {
+        "status": "clear_at_samples" if not contacts else "clear_except_support_contacts",
+        "samples": int(report.get("samples") or 0),
+        "affected_samples": int(report.get("affected_samples") or 0),
+        "support_contacts_ignored": len(support),
+        "continuous_collision_certified": False,
+        "scope": "sampled final-LBS whole-skin collision against live scene geometry",
+        "limitations": list(report.get("limitations") or ()),
+    }
 
 
 @contextmanager

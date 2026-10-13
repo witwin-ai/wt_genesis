@@ -105,17 +105,21 @@ def test_generate_humanoid_animation_rejects_blocked_root_sweep_before_scene_wri
 
     monkeypatch.setenv("WITWIN_PROJECT_DIR", str(tmp_path))
     monkeypatch.setattr(scene_animation, "build_smpl_skin_asset", lambda *args, **kwargs: _tiny_skin_asset())
-    monkeypatch.setattr(genesis_tools, "_motion_matching_geometry", lambda _scene: [{
-        "object_id": "bed",
-        "name": "bed",
-        "structure": False,
-        "points": [
-            [x, y, z]
-            for x in (0.4, 0.6)
-            for y in (0.0, 0.6)
-            for z in (-0.2, 0.2)
-        ],
-    }])
+    monkeypatch.setattr(genesis_tools, "_motion_matching_body_validation", lambda *_args: {
+        "ok": True,
+        "status": "overlap_detected",
+        "samples": 5,
+        "affected_samples": 2,
+        "contacts": [{
+            "time": 0.1,
+            "body_part": "torso",
+            "obstacle_id": "bed",
+            "obstacle": "bed",
+            "kind": "conservative_convex_overlap",
+            "penetration_m": 0.2,
+        }],
+        "limitations": ["sampled, not CCD"],
+    })
     scene = Scene(scene_id="main")
     tool = make_generate_humanoid_animation_tool(_FakeContext(scene), backend=_animated_backend)
 

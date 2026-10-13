@@ -223,7 +223,7 @@ def _run_generate_animation(ctx: Any, args: dict[str, Any], backend: Backend | N
             mesh_assets=getattr(server, "mesh_assets", None),
             broadcast=_get_broadcast_for_server(server),
             serialize_object=_get_serializer(server, scene),
-            geometry_reader=_motion_matching_geometry,
+            body_validator=_motion_matching_body_validation,
         )
     except HumanoidTrajectoryBlocked as exc:
         raise ToolError(
@@ -249,17 +249,46 @@ def _run_generate_animation(ctx: Any, args: dict[str, Any], backend: Backend | N
     return payload
 
 
-def _motion_matching_geometry(scene: Any) -> list[dict[str, Any]]:
-    """Resolve the installed room-geometry provider at the composition edge."""
+def _motion_matching_body_validation(
+    scene: Any,
+    object_id: str,
+    duration: float,
+) -> dict[str, Any]:
+    """Run the shared final-LBS validator before the Genesis transaction commits."""
     try:
-        module = importlib.import_module("witwin_motion_matching.scene_geometry")
-        reader = getattr(module, "scene_geometry")
+        module = importlib.import_module("witwin_motion_matching.body_collision_service")
+        validate = getattr(module, "body_collision_report")
     except (ImportError, AttributeError) as exc:
         raise ToolError(
-            "humanoid trajectory safety requires the Motion Matching scene geometry provider",
+            "humanoid body safety requires the Motion Matching collision provider",
             code="humanoid_clearance_unavailable",
         ) from exc
-    return list(reader(scene))
+    try:
+        return validate(
+            scene,
+            {
+                "object_id": object_id,
+                "start": 0.0,
+                "end": float(duration),
+                "fps": 30.0,
+                "max_samples": 10000,
+                "max_contacts": 200,
+                "tolerance_m": 0.0001,
+                "volume_model": "convex_parts",
+            },
+            default_project_dir(),
+        )
+    except Exception as exc:  # provider exception type is intentionally behind the port
+        if str(exc) != "no exact static environment geometry":
+            raise
+        return {
+            "ok": True,
+            "status": "clear_at_samples",
+            "samples": 0,
+            "affected_samples": 0,
+            "contacts": [],
+            "limitations": ["The scene contained no static obstacle triangles to test."],
+        }
 
 
 def _inspect_radar_pipeline_runtime() -> dict[str, Any]:
