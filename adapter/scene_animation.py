@@ -291,9 +291,12 @@ def create_humanoid_animation(
 
 
 def _validated_body_clearance(report: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(report, dict) or report.get("ok") is not True:
+    if (
+        not isinstance(report, dict)
+        or report.get("status") not in {"clear_at_samples", "overlap_detected"}
+    ):
         raise ValueError("humanoid body validator returned no successful evidence")
-    contacts = list(report.get("contacts") or ())
+    contacts = list(report.get("overlap_summary") or report.get("contacts") or ())
     blocking = []
     support = []
     for contact in contacts:
@@ -321,7 +324,7 @@ def _validated_body_clearance(report: dict[str, Any]) -> dict[str, Any]:
         "status": "clear_at_samples" if not contacts else "clear_except_support_contacts",
         "samples": int(report.get("samples") or 0),
         "affected_samples": int(report.get("affected_samples") or 0),
-        "support_contacts_ignored": len(support),
+        "support_contacts_ignored": sum(int(contact.get("samples") or 1) for contact in support),
         "continuous_collision_certified": False,
         "scope": "sampled final-LBS whole-skin collision against live scene geometry",
         "limitations": list(report.get("limitations") or ()),
