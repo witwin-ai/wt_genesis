@@ -22,6 +22,7 @@ from witwin.genesis.motion_export import Backend, MotionExportResult, generate_m
 from .baked_playback import (
     select_playback_keyframes, validate_playback_mode, verify_recorded_baked_playback,
 )
+from .trajectory_clearance import validate_humanoid_trajectory
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,7 @@ class SceneAnimationResult:
     timeline_track: dict[str, Any]
     root_motion_tracks: dict[str, Any]
     visual_mesh_cache: dict[str, Any]
+    trajectory_clearance: dict[str, Any]
     playback: dict[str, Any]
     duration: float
     autoplay: bool
@@ -50,6 +52,7 @@ class SceneAnimationResult:
                 "timeline_track": self.timeline_track,
                 "root_motion_tracks": self.root_motion_tracks,
                 "visual_mesh_cache": self.visual_mesh_cache,
+                "trajectory_clearance": self.trajectory_clearance,
                 "playback": self.playback,
                 "duration": self.duration,
                 "autoplay": self.autoplay,
@@ -80,6 +83,7 @@ def create_humanoid_animation(
     mesh_assets: Any = None,
     broadcast: Callable[[dict[str, Any]], None] | None = None,
     serialize_object: Callable[[Any], dict[str, Any]] | None = None,
+    geometry_reader: Callable[[Any], Sequence[dict[str, Any]]] | None = None,
 ) -> SceneAnimationResult:
     """Generate an SMPL asset, bind it to wt_humanoid objects, and key timeline playback."""
     if scene is None:
@@ -128,6 +132,19 @@ def create_humanoid_animation(
         body.model_root,
         gender=body.gender,
         betas=body.shape,
+    )
+    trajectory_clearance = (
+        validate_humanoid_trajectory(
+            root_motion["positions"],
+            skin_asset.vertices,
+            geometry_reader(scene),
+        )
+        if geometry_reader is not None
+        else {
+            "status": "not_checked",
+            "continuous_collision_certified": False,
+            "scope": "no scene geometry reader was provided",
+        }
     )
     # Model loading and motion validation are completed on detached objects.
     # A missing licensed SMPL file must not leave half-created scene objects.
@@ -261,6 +278,7 @@ def create_humanoid_animation(
                 "keyframe_count": motion_asset.frame_count,
             },
             visual_mesh_cache=visual_mesh_cache,
+            trajectory_clearance=trajectory_clearance,
             playback=playback,
             duration=duration,
             autoplay=bool(autoplay),

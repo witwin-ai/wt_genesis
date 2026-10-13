@@ -97,6 +97,41 @@ def test_generate_humanoid_animation_tool_creates_scene_timeline_and_playback(tm
     assert child_bone.get_component("Transform").get_quaternion().tolist() != pytest.approx([0.0, 0.0, 0.0, 1.0])
 
 
+def test_generate_humanoid_animation_rejects_blocked_root_sweep_before_scene_write(tmp_path, monkeypatch):
+    from witwin_server.core.scene import Scene
+    import wt_genesis.adapter.scene_animation as scene_animation
+    import wt_genesis.tools as genesis_tools
+    from wt_genesis.tools import make_generate_humanoid_animation_tool
+
+    monkeypatch.setenv("WITWIN_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setattr(scene_animation, "build_smpl_skin_asset", lambda *args, **kwargs: _tiny_skin_asset())
+    monkeypatch.setattr(genesis_tools, "_motion_matching_geometry", lambda _scene: [{
+        "object_id": "bed",
+        "name": "bed",
+        "structure": False,
+        "points": [
+            [x, y, z]
+            for x in (0.4, 0.6)
+            for y in (0.0, 0.6)
+            for z in (-0.2, 0.2)
+        ],
+    }])
+    scene = Scene(scene_id="main")
+    tool = make_generate_humanoid_animation_tool(_FakeContext(scene), backend=_animated_backend)
+
+    with pytest.raises(Exception) as raised:
+        asyncio.run(tool.call({
+            "prompt": "a person waves",
+            "motion_length": 0.2,
+            "device": -1,
+            "position": [0.0, 0.0, 0.0],
+        }))
+
+    assert getattr(raised.value, "code", None) == "humanoid_trajectory_blocked"
+    assert scene.objects == {}
+    assert scene.timeline_manager is None
+
+
 def test_generate_humanoid_animation_tool_saves_and_broadcasts_final_scene(tmp_path, monkeypatch):
     from witwin_server.core.scene import Scene
     import wt_genesis.adapter.scene_animation as scene_animation

@@ -14,6 +14,7 @@ from witwin_server.tools.base import Tool, ToolError, tool
 from witwin.genesis.assets import inspect_runtime
 from witwin.genesis.motion_export import Backend, generate_motion_asset
 from .adapter.scene_animation import create_humanoid_animation
+from .adapter.trajectory_clearance import HumanoidTrajectoryBlocked
 
 
 _DESCRIPTION = (
@@ -201,27 +202,35 @@ def _run_generate_animation(ctx: Any, args: dict[str, Any], backend: Backend | N
     if scene is None:
         raise ToolError("no active scene", code="no_scene")
     server = _get_server(ctx)
-    result = create_humanoid_animation(
-        scene=scene,
-        project_dir=default_project_dir(),
-        prompt=args["prompt"],
-        motion_length=float(args.get("motion_length", 6.0)),
-        seed=int(args.get("seed", 10)),
-        device=int(args.get("device", 0)),
-        guidance_param=float(args.get("guidance_param", 2.5)),
-        smplify_iters=int(args.get("smplify_iters", 20)),
-        output_name=args.get("output_name"),
-        body_name=args.get("body_name"),
-        motion_name=args.get("motion_name"),
-        position=args.get("position"),
-        autoplay=bool(args.get("autoplay", False)),
-        loop=bool(args.get("loop", True)),
-        playback_mode=str(args.get("playback_mode", "legacy_controller")),
-        backend=backend,
-        mesh_assets=getattr(server, "mesh_assets", None),
-        broadcast=_get_broadcast_for_server(server),
-        serialize_object=_get_serializer(server, scene),
-    )
+    try:
+        result = create_humanoid_animation(
+            scene=scene,
+            project_dir=default_project_dir(),
+            prompt=args["prompt"],
+            motion_length=float(args.get("motion_length", 6.0)),
+            seed=int(args.get("seed", 10)),
+            device=int(args.get("device", 0)),
+            guidance_param=float(args.get("guidance_param", 2.5)),
+            smplify_iters=int(args.get("smplify_iters", 20)),
+            output_name=args.get("output_name"),
+            body_name=args.get("body_name"),
+            motion_name=args.get("motion_name"),
+            position=args.get("position"),
+            autoplay=bool(args.get("autoplay", False)),
+            loop=bool(args.get("loop", True)),
+            playback_mode=str(args.get("playback_mode", "legacy_controller")),
+            backend=backend,
+            mesh_assets=getattr(server, "mesh_assets", None),
+            broadcast=_get_broadcast_for_server(server),
+            serialize_object=_get_serializer(server, scene),
+            geometry_reader=_motion_matching_geometry,
+        )
+    except HumanoidTrajectoryBlocked as exc:
+        raise ToolError(
+            str(exc),
+            code="humanoid_trajectory_blocked",
+            detail={"blockers": exc.blockers},
+        ) from exc
     _save_generated_scene(server, scene)
     payload = result.to_dict()
     payload["scene_id"] = getattr(scene, "scene_id", None)
@@ -238,6 +247,19 @@ def _run_generate_animation(ctx: Any, args: dict[str, Any], backend: Backend | N
         },
     }
     return payload
+
+
+def _motion_matching_geometry(scene: Any) -> list[dict[str, Any]]:
+    """Resolve the installed room-geometry provider at the composition edge."""
+    try:
+        module = importlib.import_module("witwin_motion_matching.scene_geometry")
+        reader = getattr(module, "scene_geometry")
+    except (ImportError, AttributeError) as exc:
+        raise ToolError(
+            "humanoid trajectory safety requires the Motion Matching scene geometry provider",
+            code="humanoid_clearance_unavailable",
+        ) from exc
+    return list(reader(scene))
 
 
 def _inspect_radar_pipeline_runtime() -> dict[str, Any]:
