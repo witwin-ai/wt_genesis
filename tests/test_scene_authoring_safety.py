@@ -174,6 +174,34 @@ def test_replay_or_other_write_guard_fails_before_generation(tmp_path, monkeypat
     assert _snapshot(scene, existing) == before
 
 
+def test_floor_support_correction_allows_bounded_iterative_convergence(monkeypatch):
+    calls = 0
+
+    def validator(_scene, _object_id, _start_time, _end_time):
+        nonlocal calls
+        calls += 1
+        if calls <= 4:
+            return {
+                "status": "overlap_detected",
+                "contacts": [{
+                    "obstacle_id": "floor",
+                    "obstacle": "floor",
+                    "time": 4.5,
+                    "penetration_m": 0.03,
+                    "kind": "conservative_convex_overlap",
+                }],
+            }
+        return {"status": "clear_at_samples", "samples": 120}
+
+    monkeypatch.setattr(adapter, "_lift_root_track_suffix", lambda *_args, **_kwargs: None)
+    result = adapter._validate_with_floor_support_correction(
+        object(), "human", 0.0, 6.0, validator,
+    )
+
+    assert calls == 5
+    assert result["floor_support_correction"]["attempts"] == 4
+
+
 @pytest.mark.parametrize("key", ["smpl_pose", "smpl_betas", "smpl_trans"])
 def test_nonfinite_generated_body_is_rejected_before_scene_mutation(tmp_path, monkeypatch, key):
     scene, existing = _existing_scene()
