@@ -316,7 +316,7 @@ def _validate_with_floor_support_correction(
     validator: Callable[[Any, str, float, float], dict[str, Any]],
     *,
     maximum_correction_m: float = 0.35,
-    maximum_attempts: int = 3,
+    maximum_attempts: int = 8,
 ) -> dict[str, Any]:
     """Lift only floor-contacting suffixes, then rerun final-LBS validation."""
 
