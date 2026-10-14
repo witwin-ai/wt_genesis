@@ -24,17 +24,33 @@ def _blend_axis_angles(start: np.ndarray, end: np.ndarray, count: int) -> np.nda
     return blended
 
 
-def trim_preparation(source: Path, destination: Path, stand: int, falling: int) -> None:
+def trim_preparation(
+    source: Path,
+    destination: Path,
+    stand: int,
+    falling: int,
+    articulation: int,
+) -> None:
     with np.load(source) as archive:
         payload = {key: archive[key] for key in archive.files}
 
     pose = np.asarray(payload["smpl_pose"], dtype=np.float32).copy()
     root = np.asarray(payload["root"], dtype=np.float32).copy()
-    if not (0 <= stand < falling < pose.shape[0]):
-        raise ValueError("expected 0 <= stand < falling < frame count")
+    if not (0 <= stand < articulation < falling < pose.shape[0]):
+        raise ValueError("expected stand < articulation < falling within the clip")
 
     count = falling - stand + 1
-    pose[stand : falling + 1] = _blend_axis_angles(pose[stand], pose[falling], count)
+    # Tilt the whole body as soon as balance is lost.  Keep the articulated
+    # standing pose until late in the fall so the interpolation cannot create
+    # a squat or burpee-like preparation.
+    pose[stand : falling + 1, 0] = _blend_axis_angles(
+        pose[stand, :1], pose[falling, :1], count,
+    )[:, 0]
+    articulated_count = falling - articulation + 1
+    pose[stand:articulation, 1:] = pose[stand, 1:]
+    pose[articulation : falling + 1, 1:] = _blend_axis_angles(
+        pose[stand, 1:], pose[falling, 1:], articulated_count,
+    )
     fractions = np.linspace(0.0, 1.0, count, dtype=np.float32)[:, None]
     root[stand : falling + 1] = root[stand] + fractions * (root[falling] - root[stand])
 
@@ -53,8 +69,15 @@ def main() -> None:
     parser.add_argument("destination", type=Path)
     parser.add_argument("--stand-frame", type=int, default=44)
     parser.add_argument("--falling-frame", type=int, default=52)
+    parser.add_argument("--articulation-frame", type=int, default=48)
     args = parser.parse_args()
-    trim_preparation(args.source, args.destination, args.stand_frame, args.falling_frame)
+    trim_preparation(
+        args.source,
+        args.destination,
+        args.stand_frame,
+        args.falling_frame,
+        args.articulation_frame,
+    )
 
 
 if __name__ == "__main__":
