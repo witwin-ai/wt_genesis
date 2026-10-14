@@ -251,6 +251,57 @@ def test_generate_humanoid_animation_keys_root_motion_on_body_transform(tmp_path
     assert transform.rotation.tolist() == pytest.approx(rotation_track.keyframes[2].value)
 
 
+def test_generate_humanoid_animation_offsets_all_baked_tracks(tmp_path, monkeypatch):
+    from witwin_server.core.scene import Scene
+    import wt_genesis.adapter.scene_animation as scene_animation
+    from wt_genesis.adapter.scene_animation import create_humanoid_animation
+
+    monkeypatch.setattr(
+        scene_animation,
+        "build_smpl_skin_asset",
+        lambda *args, **kwargs: _tiny_skin_asset(),
+    )
+    scene = Scene(scene_id="main")
+    validated_intervals = []
+
+    def validate(_scene, _object_id, start, end):
+        validated_intervals.append((start, end))
+        return {
+            "status": "clear_at_samples",
+            "samples": 3,
+            "affected_samples": 0,
+            "contacts": [],
+        }
+
+    result = create_humanoid_animation(
+        scene=scene,
+        project_dir=tmp_path,
+        prompt="a person falls",
+        motion_length=0.15,
+        device=-1,
+        output_name="delayed fall",
+        start_time=4.5,
+        playback_mode="baked_transforms",
+        backend=_root_motion_backend,
+        body_validator=validate,
+    )
+
+    assert result.start_time == pytest.approx(4.5)
+    assert scene.timeline_manager.duration == pytest.approx(
+        4.5 + result.duration,
+    )
+    body = scene.get_object(result.body_object_id)
+    bone_ids = body.get_component("SkinnedMesh").bone_ids
+    relevant = [
+        track
+        for track in scene.timeline_manager.clip.tracks.values()
+        if track.object_id in {result.body_object_id, *bone_ids}
+    ]
+    assert relevant
+    assert all(track.keyframes[0].time == pytest.approx(4.5) for track in relevant)
+    assert validated_intervals == [(4.5, pytest.approx(4.5 + result.duration))]
+
+
 def test_generate_humanoid_animation_preserves_initial_vertical_root_translation(tmp_path, monkeypatch):
     from witwin_server.core.scene import Scene
     import wt_genesis.adapter.scene_animation as scene_animation

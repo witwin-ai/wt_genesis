@@ -37,6 +37,7 @@ class SceneAnimationResult:
     visual_mesh_cache: dict[str, Any]
     trajectory_clearance: dict[str, Any]
     playback: dict[str, Any]
+    start_time: float
     duration: float
     autoplay: bool
     loop: bool
@@ -54,6 +55,7 @@ class SceneAnimationResult:
                 "visual_mesh_cache": self.visual_mesh_cache,
                 "trajectory_clearance": self.trajectory_clearance,
                 "playback": self.playback,
+                "start_time": self.start_time,
                 "duration": self.duration,
                 "autoplay": self.autoplay,
                 "loop": self.loop,
@@ -76,6 +78,7 @@ def create_humanoid_animation(
     body_name: str | None = None,
     motion_name: str | None = None,
     position: Sequence[float] | None = None,
+    start_time: float = 0.0,
     autoplay: bool = False,
     loop: bool = True,
     playback_mode: str = "legacy_controller",
@@ -84,12 +87,15 @@ def create_humanoid_animation(
     broadcast: Callable[[dict[str, Any]], None] | None = None,
     serialize_object: Callable[[Any], dict[str, Any]] | None = None,
     geometry_reader: Callable[[Any], Sequence[dict[str, Any]]] | None = None,
-    body_validator: Callable[[Any, str, float], dict[str, Any]] | None = None,
+    body_validator: Callable[[Any, str, float, float], dict[str, Any]] | None = None,
 ) -> SceneAnimationResult:
     """Generate an SMPL asset, bind it to wt_humanoid objects, and key timeline playback."""
     if scene is None:
         raise ValueError("scene is required")
     playback_mode = validate_playback_mode(playback_mode)
+    start_time = float(start_time)
+    if not math.isfinite(start_time) or start_time < 0.0:
+        raise ValueError("start_time must be finite and non-negative")
     require_write = getattr(scene, "_require_author_write", None)
     if callable(require_write):
         require_write("witwin.genesis.generate_humanoid_animation")
@@ -185,7 +191,11 @@ def create_humanoid_animation(
             timeline.is_looping = bool(loop)
         duration = _motion_duration(motion_asset.frame_count, motion_asset.fps)
         retained_end = timeline.clip.get_keyframe_range()[1] if existing_tracks else 0.0
-        timeline.duration = max(timeline.duration, retained_end, duration) if existing_tracks else duration
+        animation_end = start_time + duration
+        timeline.duration = (
+            max(timeline.duration, retained_end, animation_end)
+            if existing_tracks else animation_end
+        )
 
         keyframes = [
             {
@@ -238,11 +248,14 @@ def create_humanoid_animation(
             frame_count=motion_asset.frame_count,
             fps=motion_asset.fps,
         )
+        if start_time:
+            for keyframe in keyframes:
+                keyframe["time"] = float(keyframe["time"]) + start_time
         timeline.record_keyframes(keyframes)
         verify_recorded_baked_playback(timeline, keyframes, playback)
         if body_validator is not None:
             trajectory_clearance = _validated_body_clearance(
-                body_validator(scene, body_obj.id, duration)
+                body_validator(scene, body_obj.id, start_time, animation_end)
             )
         playback_track = ((body_obj.id, "Transform", "position")
                           if playback_mode == "baked_transforms"
@@ -284,6 +297,7 @@ def create_humanoid_animation(
             visual_mesh_cache=visual_mesh_cache,
             trajectory_clearance=trajectory_clearance,
             playback=playback,
+            start_time=start_time,
             duration=duration,
             autoplay=bool(autoplay),
             loop=bool(loop),

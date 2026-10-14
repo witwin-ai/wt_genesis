@@ -126,6 +126,11 @@ _ANIMATION_INPUT_SCHEMA = {
             "maxItems": 3,
             "description": "Scene position for the generated humanoid, as [x, y, z]. Default [0, 0, 0].",
         },
+        "start_time": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Timeline time in seconds when this humanoid animation begins. Default 0.",
+        },
         "autoplay": {
             "type": "boolean",
             "description": "Whether to start timeline playback after creating the animation. Default false.",
@@ -244,6 +249,7 @@ def _run_generate_animation(ctx: Any, args: dict[str, Any], backend: Backend | N
             body_name=args.get("body_name"),
             motion_name=args.get("motion_name"),
             position=args.get("position"),
+            start_time=float(args.get("start_time", 0.0)),
             autoplay=bool(args.get("autoplay", False)),
             loop=bool(args.get("loop", True)),
             playback_mode=str(args.get("playback_mode", "legacy_controller")),
@@ -280,7 +286,8 @@ def _run_generate_animation(ctx: Any, args: dict[str, Any], backend: Backend | N
 def _motion_matching_body_validation(
     scene: Any,
     object_id: str,
-    duration: float,
+    start_time: float,
+    end_time: float,
 ) -> dict[str, Any]:
     """Run the shared final-LBS validator before the Genesis transaction commits."""
     try:
@@ -296,8 +303,8 @@ def _motion_matching_body_validation(
             scene,
             {
                 "object_id": object_id,
-                "start": 0.0,
-                "end": float(duration),
+                "start": float(start_time),
+                "end": float(end_time),
                 "fps": 30.0,
                 "max_samples": 10000,
                 "max_contacts": 200,
