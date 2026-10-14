@@ -1,9 +1,9 @@
 """Remove the generated crouch that precedes the curated slip preset.
 
 The source motion has a useful walking lead-in and floor landing, but frames
-45-51 contain a deliberate squat.  Replacing that interval with a short
-rotation-space blend produces an immediate loss of balance while preserving
-the generated landing and recovery.
+45-51 contain a deliberate squat.  Replacing that interval with a direct
+rotation-space fall preserves the later generated bracing pose: the shoulders,
+elbows, wrists, spine and legs react instead of the body rotating as one plank.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ def trim_preparation(
     destination: Path,
     stand: int,
     falling: int,
+    reaction: int,
     landing_tilt_radians: float,
     landing_root_y: float,
 ) -> None:
@@ -37,19 +38,21 @@ def trim_preparation(
 
     pose = np.asarray(payload["smpl_pose"], dtype=np.float32).copy()
     root = np.asarray(payload["root"], dtype=np.float32).copy()
-    if not (0 <= stand < falling < pose.shape[0]):
-        raise ValueError("expected stand < falling within the clip")
+    if not (0 <= stand < falling <= reaction < pose.shape[0]):
+        raise ValueError("expected stand < falling <= reaction within the clip")
 
     count = falling - stand + 1
-    source_fall_pose = pose[falling].copy()
+    source_fall_pose = pose[reaction].copy()
     landing_pose = pose[stand].copy()
     landing_pose[0] = (
         Rotation.from_rotvec([landing_tilt_radians, 0.0, 0.0])
         * Rotation.from_rotvec(pose[stand, 0])
     ).as_rotvec()
-    # Retain the generated arm reaction, but keep the standing lower body.
-    # The whole-body root tilt now causes the fall instead of hip/knee flexion.
-    landing_pose[13:] = source_fall_pose[13:]
+    # Keep the later generated bracing articulation while skipping the source
+    # motion's squat/burpee preparation. The root is authored separately below;
+    # all other joints retain asymmetric arm support, spinal flexion and a
+    # non-rigid leg reaction at floor contact.
+    landing_pose[1:] = source_fall_pose[1:]
     pose[stand : falling + 1] = _blend_axis_angles(pose[stand], landing_pose, count)
     pose[falling:] = landing_pose
 
@@ -73,7 +76,8 @@ def main() -> None:
     parser.add_argument("source", type=Path)
     parser.add_argument("destination", type=Path)
     parser.add_argument("--stand-frame", type=int, default=44)
-    parser.add_argument("--falling-frame", type=int, default=52)
+    parser.add_argument("--falling-frame", type=int, default=58)
+    parser.add_argument("--reaction-frame", type=int, default=64)
     parser.add_argument("--landing-tilt-radians", type=float, default=1.35)
     parser.add_argument("--landing-root-y", type=float, default=0.65)
     args = parser.parse_args()
@@ -82,6 +86,7 @@ def main() -> None:
         args.destination,
         args.stand_frame,
         args.falling_frame,
+        args.reaction_frame,
         args.landing_tilt_radians,
         args.landing_root_y,
     )
