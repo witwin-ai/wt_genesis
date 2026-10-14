@@ -324,6 +324,7 @@ def _run_generate_animation(ctx: Any, args: dict[str, Any], backend: Backend | N
             broadcast=_get_broadcast_for_server(server),
             serialize_object=_get_serializer(server, scene),
             body_validator=_motion_matching_body_validation,
+            maximum_floor_correction_m=1.0,
         )
     except HumanoidTrajectoryBlocked as exc:
         raise ToolError(

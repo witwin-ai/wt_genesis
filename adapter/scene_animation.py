@@ -89,6 +89,7 @@ def create_humanoid_animation(
     geometry_reader: Callable[[Any], Sequence[dict[str, Any]]] | None = None,
     body_validator: Callable[[Any, str, float, float], dict[str, Any]] | None = None,
     motion_asset: MotionExportResult | None = None,
+    maximum_floor_correction_m: float = 0.35,
 ) -> SceneAnimationResult:
     """Generate or reuse an SMPL asset, bind it, and key timeline playback."""
     if scene is None:
@@ -262,6 +263,7 @@ def create_humanoid_animation(
                 start_time,
                 animation_end,
                 body_validator,
+                maximum_correction_m=maximum_floor_correction_m,
             )
         playback_track = ((body_obj.id, "Transform", "position")
                           if playback_mode == "baked_transforms"
