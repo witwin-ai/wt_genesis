@@ -334,6 +334,10 @@ def test_floor_penetration_is_lifted_and_revalidated_without_ignoring_obstacles(
             "samples": 6,
             "affected_samples": 0,
             "contacts": [],
+            "limitations": [
+                "Finite samples are not CCD.",
+                "No automatic support-contact exemption or motion correction.",
+            ],
         },
     ]
 
@@ -355,6 +359,9 @@ def test_floor_penetration_is_lifted_and_revalidated_without_ignoring_obstacles(
     correction = result.trajectory_clearance["floor_support_correction"]
     assert correction["status"] == "applied_and_revalidated"
     assert correction["total_lift_m"] == pytest.approx(0.081)
+    assert result.trajectory_clearance["limitations"] == [
+        "Finite samples are not CCD.",
+    ]
     track = scene.timeline_manager.clip.get_track(
         result.body_object_id, "Transform", "position",
     )

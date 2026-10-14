@@ -360,6 +360,10 @@ def _validate_with_floor_support_correction(
             })
             continue
         if corrections:
+            result["limitations"] = [
+                value for value in result.get("limitations", [])
+                if "No automatic support-contact exemption or motion correction" not in value
+            ]
             result["floor_support_correction"] = {
                 "status": "applied_and_revalidated",
                 "attempts": len(corrections),
