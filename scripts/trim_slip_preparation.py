@@ -30,6 +30,7 @@ def trim_preparation(
     stand: int,
     falling: int,
     landing_tilt_radians: float,
+    landing_root_y: float,
 ) -> None:
     with np.load(source) as archive:
         payload = {key: archive[key] for key in archive.files}
@@ -53,7 +54,7 @@ def trim_preparation(
     pose[falling:] = landing_pose
 
     landing_root = root[falling].copy()
-    landing_root[1] = 0.35
+    landing_root[1] = landing_root_y
     fractions = np.linspace(0.0, 1.0, count, dtype=np.float32)[:, None]
     root[stand : falling + 1] = root[stand] + fractions * (landing_root - root[stand])
     root[falling:] = landing_root
@@ -74,6 +75,7 @@ def main() -> None:
     parser.add_argument("--stand-frame", type=int, default=44)
     parser.add_argument("--falling-frame", type=int, default=52)
     parser.add_argument("--landing-tilt-radians", type=float, default=1.35)
+    parser.add_argument("--landing-root-y", type=float, default=0.65)
     args = parser.parse_args()
     trim_preparation(
         args.source,
@@ -81,6 +83,7 @@ def main() -> None:
         args.stand_frame,
         args.falling_frame,
         args.landing_tilt_radians,
+        args.landing_root_y,
     )
 
 
