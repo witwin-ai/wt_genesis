@@ -1,10 +1,9 @@
 """Replace the generated crouch with an involuntary, articulated slip.
 
 The source motion has a useful walking lead-in and floor landing, but frames
-45-51 contain a deliberate squat.  The replacement deliberately staggers the
-protective arm response ahead of the torso and legs, then moves the arms toward
-the generated landing pose.  This keeps the fall accidental instead of making
-the body rotate as one rigid plank.
+45-51 contain a deliberate squat.  The replacement deliberately moves the arms
+into the generated protective landing pose ahead of the torso and legs.  This
+keeps the fall accidental instead of making the body rotate as one rigid plank.
 """
 
 from __future__ import annotations
@@ -48,7 +47,6 @@ def trim_preparation(
     stand: int,
     falling: int,
     reaction: int,
-    protective: int,
     landing_tilt_radians: float,
     landing_root_y: float,
 ) -> None:
@@ -57,13 +55,10 @@ def trim_preparation(
 
     pose = np.asarray(payload["smpl_pose"], dtype=np.float32).copy()
     root = np.asarray(payload["root"], dtype=np.float32).copy()
-    if not (0 <= protective < stand < falling <= reaction < pose.shape[0]):
-        raise ValueError(
-            "expected protective < stand < falling <= reaction within the clip",
-        )
+    if not (0 <= stand < falling <= reaction < pose.shape[0]):
+        raise ValueError("expected stand < falling <= reaction within the clip")
 
     source_fall_pose = pose[reaction].copy()
-    protective_pose = pose[protective].copy()
     landing_pose = pose[stand].copy()
     landing_pose[0] = (
         Rotation.from_rotvec([landing_tilt_radians, 0.0, 0.0])
@@ -82,17 +77,11 @@ def trim_preparation(
         stand,
         arm_peak,
         standing_pose,
-        protective_pose,
-        ARM_JOINTS,
-    )
-    _blend_joints(
-        pose,
-        arm_peak,
-        falling,
-        protective_pose,
         landing_pose,
         ARM_JOINTS,
     )
+    arm_indices = list(ARM_JOINTS)
+    pose[arm_peak : falling + 1, arm_indices] = landing_pose[arm_indices]
     _blend_joints(
         pose,
         stand + 3,
@@ -137,7 +126,6 @@ def main() -> None:
     parser.add_argument("--stand-frame", type=int, default=44)
     parser.add_argument("--falling-frame", type=int, default=58)
     parser.add_argument("--reaction-frame", type=int, default=64)
-    parser.add_argument("--protective-frame", type=int, default=5)
     parser.add_argument("--landing-tilt-radians", type=float, default=1.35)
     parser.add_argument("--landing-root-y", type=float, default=0.65)
     args = parser.parse_args()
@@ -147,7 +135,6 @@ def main() -> None:
         args.stand_frame,
         args.falling_frame,
         args.reaction_frame,
-        args.protective_frame,
         args.landing_tilt_radians,
         args.landing_root_y,
     )
