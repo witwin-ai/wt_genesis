@@ -3,16 +3,20 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import re
+import shutil
 from importlib import metadata
+from pathlib import Path
 from typing import Any
 
+import numpy as np
 from packaging.specifiers import SpecifierSet
 
 from witwin_server.plugins.paths import default_project_dir
 from witwin_server.tools.base import Tool, ToolError, tool
 
 from witwin.genesis.assets import inspect_runtime
-from witwin.genesis.motion_export import Backend, generate_motion_asset
+from witwin.genesis.motion_export import Backend, MotionExportResult, generate_motion_asset
 from .adapter.scene_animation import create_humanoid_animation
 from .adapter.trajectory_clearance import HumanoidTrajectoryBlocked
 
@@ -144,6 +148,36 @@ _ANIMATION_INPUT_SCHEMA = {
     "additionalProperties": False,
 }
 
+_PRESET_ANIMATION_INPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "scene_id": {"type": "string", "minLength": 1},
+        "preset": {
+            "type": "string",
+            "enum": ["accidental_slip_v1"],
+            "description": "Curated, visually validated humanoid motion preset.",
+        },
+        "output_name": {"type": "string"},
+        "body_name": {"type": "string"},
+        "motion_name": {"type": "string"},
+        "position": {
+            "type": "array", "items": {"type": "number"},
+            "minItems": 3, "maxItems": 3,
+        },
+        "start_time": {"type": "number", "minimum": 0},
+        "autoplay": {"type": "boolean"},
+        "loop": {"type": "boolean"},
+        "playback_mode": {
+            "type": "string", "enum": ["legacy_controller", "baked_transforms"],
+            "default": "baked_transforms",
+        },
+    },
+    "required": ["preset"],
+    "additionalProperties": False,
+}
+
+_PRESET_FILES = {"accidental_slip_v1": "accidental_slip_v1.npz"}
+
 
 def make_check_genesis_runtime_tool(ctx: Any) -> Tool:
     @tool(
@@ -206,6 +240,38 @@ def make_generate_humanoid_animation_tool(ctx: Any, *, backend: Backend | None =
     return generate_humanoid_animation
 
 
+def make_apply_humanoid_motion_preset_tool(ctx: Any) -> Tool:
+    @tool(
+        name="apply_humanoid_motion_preset",
+        description=(
+            "Place a curated, reproducible SMPL humanoid motion in the current scene. "
+            "Use accidental_slip_v1 when the user wants a standing person to unexpectedly "
+            "slip, fall to the floor, and remain down without a squat or burpee preparation."
+        ),
+        input_schema=_PRESET_ANIMATION_INPUT_SCHEMA,
+        output_schema={"type": "object"},
+        side_effects=True,
+        requires_confirmation=True,
+        permission_scope="genesis.generate_scene_animation",
+        permission_tier="execute",
+        timeout=900.0,
+        tags=(
+            "pack:witwin.scene",
+            "word-intent:human",
+            "hint-term:slip and fall",
+            "hint-term:accidental fall",
+            "hint-explicit-intent:person slips",
+            "hint-explicit-intent:human falls accidentally",
+            "hint-requires-pack",
+            "hint-boost:24",
+        ),
+    )
+    async def apply_humanoid_motion_preset(args: dict[str, Any]) -> dict[str, Any]:
+        return await asyncio.to_thread(_run_preset_animation, ctx, args)
+
+    return apply_humanoid_motion_preset
+
+
 def _run_generate(args: dict[str, Any], backend: Backend | None) -> dict[str, Any]:
     result = generate_motion_asset(
         default_project_dir(),
@@ -265,6 +331,81 @@ def _run_generate_animation(ctx: Any, args: dict[str, Any], backend: Backend | N
             code="humanoid_trajectory_blocked",
             detail={"blockers": exc.blockers},
         ) from exc
+    return _finalize_scene_animation(server, scene, result)
+
+
+def _run_preset_animation(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
+    scene = _get_scene(ctx, args.get("scene_id"))
+    if scene is None:
+        raise ToolError("no active scene", code="no_scene")
+    server = _get_server(ctx)
+    motion_asset = _materialize_preset_motion(
+        default_project_dir(),
+        str(args["preset"]),
+        args.get("output_name"),
+    )
+    try:
+        result = create_humanoid_animation(
+            scene=scene,
+            project_dir=default_project_dir(),
+            prompt=motion_asset.prompt,
+            output_name=args.get("output_name"),
+            body_name=args.get("body_name"),
+            motion_name=args.get("motion_name"),
+            position=args.get("position"),
+            start_time=float(args.get("start_time", 0.0)),
+            autoplay=bool(args.get("autoplay", False)),
+            loop=bool(args.get("loop", False)),
+            playback_mode=str(args.get("playback_mode", "baked_transforms")),
+            motion_asset=motion_asset,
+            mesh_assets=getattr(server, "mesh_assets", None),
+            broadcast=_get_broadcast_for_server(server),
+            serialize_object=_get_serializer(server, scene),
+            body_validator=_motion_matching_body_validation,
+        )
+    except HumanoidTrajectoryBlocked as exc:
+        raise ToolError(
+            str(exc),
+            code="humanoid_trajectory_blocked",
+            detail={"blockers": exc.blockers},
+        ) from exc
+    return _finalize_scene_animation(server, scene, result)
+
+
+def _materialize_preset_motion(
+    project_dir: str | Path,
+    preset: str,
+    output_name: str | None,
+) -> MotionExportResult:
+    filename = _PRESET_FILES.get(preset)
+    if filename is None:
+        raise ToolError(f"unknown humanoid motion preset: {preset}", code="unknown_motion_preset")
+    source = Path(__file__).resolve().parent / "assets" / filename
+    if not source.is_file():
+        raise ToolError(f"humanoid motion preset is missing: {preset}", code="missing_motion_preset")
+    root = Path(project_dir).resolve()
+    output_dir = root / "assets" / "motions"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stem = re.sub(r"[^A-Za-z0-9]+", "_", output_name or preset).strip("_").lower()
+    target = output_dir / f"{stem or preset}.npz"
+    shutil.copyfile(source, target)
+    with np.load(target, allow_pickle=False) as data:
+        pose = np.asarray(data["smpl_pose"], dtype=np.float32)
+        if pose.ndim != 3 or pose.shape[1:] != (24, 3) or pose.shape[0] < 2:
+            raise ToolError("humanoid motion preset has an invalid SMPL pose", code="invalid_motion_preset")
+        fps = float(np.asarray(data["fps"]).item())
+        prompt = str(np.asarray(data["prompt"]).item())
+    return MotionExportResult(
+        ok=True,
+        motion_path=str(target),
+        project_relative_path=target.relative_to(root).as_posix(),
+        frame_count=int(pose.shape[0]),
+        fps=fps,
+        prompt=prompt,
+    )
+
+
+def _finalize_scene_animation(server: Any, scene: Any, result: Any) -> dict[str, Any]:
     _save_generated_scene(server, scene)
     payload = result.to_dict()
     payload["scene_id"] = getattr(scene, "scene_id", None)
@@ -443,3 +584,4 @@ def register(ctx: Any) -> None:
     ctx.tools.register(make_check_genesis_runtime_tool(ctx))
     ctx.tools.register(make_generate_smpl_motion_tool(ctx))
     ctx.tools.register(make_generate_humanoid_animation_tool(ctx))
+    ctx.tools.register(make_apply_humanoid_motion_preset_tool(ctx))

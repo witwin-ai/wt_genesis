@@ -124,6 +124,7 @@ def test_register_adds_namespaced_tool_to_context():
         "check_genesis_runtime",
         "generate_smpl_motion",
         "generate_humanoid_animation",
+        "apply_humanoid_motion_preset",
     ]
     animation = next(tool for tool in ctx.tools.registered
                      if tool.name == "generate_humanoid_animation")

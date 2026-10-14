@@ -97,6 +97,38 @@ def test_generate_humanoid_animation_tool_creates_scene_timeline_and_playback(tm
     assert child_bone.get_component("Transform").get_quaternion().tolist() != pytest.approx([0.0, 0.0, 0.0, 1.0])
 
 
+def test_apply_humanoid_motion_preset_materializes_reproducible_asset(tmp_path, monkeypatch):
+    from witwin_server.core.scene import Scene
+    import wt_genesis.adapter.scene_animation as scene_animation
+    import wt_genesis.tools as genesis_tools
+
+    monkeypatch.setenv("WITWIN_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setattr(scene_animation, "build_smpl_skin_asset", lambda *args, **kwargs: _tiny_skin_asset())
+    monkeypatch.setattr(
+        genesis_tools,
+        "_motion_matching_body_validation",
+        lambda *_args: {"ok": True, "status": "clear_at_samples", "contacts": []},
+    )
+    scene = Scene(scene_id="main")
+    tool = genesis_tools.make_apply_humanoid_motion_preset_tool(_FakeContext(scene))
+
+    result = asyncio.run(tool.call({
+        "preset": "accidental_slip_v1",
+        "scene_id": "main",
+        "output_name": "curated slip",
+        "position": [1.0, 0.0, 2.0],
+        "playback_mode": "baked_transforms",
+        "loop": False,
+    }))
+
+    assert result["ok"] is True
+    assert result["frame_count"] == 120
+    assert result["project_relative_path"] == "assets/motions/curated_slip.npz"
+    assert result["playback"]["mode"] == "baked_transforms"
+    assert scene.get_object(result["body_object_id"]) is not None
+    assert (tmp_path / "assets" / "motions" / "curated_slip.npz").is_file()
+
+
 def test_generate_humanoid_animation_rejects_blocked_root_sweep_before_scene_write(tmp_path, monkeypatch):
     from witwin_server.core.scene import Scene
     import wt_genesis.adapter.scene_animation as scene_animation

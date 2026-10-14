@@ -88,8 +88,9 @@ def create_humanoid_animation(
     serialize_object: Callable[[Any], dict[str, Any]] | None = None,
     geometry_reader: Callable[[Any], Sequence[dict[str, Any]]] | None = None,
     body_validator: Callable[[Any, str, float, float], dict[str, Any]] | None = None,
+    motion_asset: MotionExportResult | None = None,
 ) -> SceneAnimationResult:
-    """Generate an SMPL asset, bind it to wt_humanoid objects, and key timeline playback."""
+    """Generate or reuse an SMPL asset, bind it, and key timeline playback."""
     if scene is None:
         raise ValueError("scene is required")
     playback_mode = validate_playback_mode(playback_mode)
@@ -101,17 +102,18 @@ def create_humanoid_animation(
         require_write("witwin.genesis.generate_humanoid_animation")
     position_value = _normalize_position(position)
 
-    motion_asset = generate_motion_asset(
-        project_dir,
-        prompt=prompt,
-        motion_length=motion_length,
-        seed=seed,
-        device=device,
-        guidance_param=guidance_param,
-        smplify_iters=smplify_iters,
-        output_name=output_name,
-        backend=backend,
-    )
+    if motion_asset is None:
+        motion_asset = generate_motion_asset(
+            project_dir,
+            prompt=prompt,
+            motion_length=motion_length,
+            seed=seed,
+            device=device,
+            guidance_param=guidance_param,
+            smplify_iters=smplify_iters,
+            output_name=output_name,
+            backend=backend,
+        )
     root_motion = _build_root_motion_tracks(motion_asset, position_value)
 
     body_obj, body = _create_smpl_body(
