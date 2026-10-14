@@ -125,6 +125,12 @@ def test_register_adds_namespaced_tool_to_context():
         "generate_smpl_motion",
         "generate_humanoid_animation",
     ]
+    animation = next(tool for tool in ctx.tools.registered
+                     if tool.name == "generate_humanoid_animation")
+    assert "pack:witwin.scene" in animation.tags
+    assert "word-intent:person" in animation.tags
+    assert "hint-explicit-intent:someone walking" in animation.tags
+    assert "hint-requires-pack" in animation.tags
 
 
 @dataclass

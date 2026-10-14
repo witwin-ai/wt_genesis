@@ -17,6 +17,33 @@ from .adapter.scene_animation import create_humanoid_animation
 from .adapter.trajectory_clearance import HumanoidTrajectoryBlocked
 
 
+_HUMANOID_ANIMATION_RETRIEVAL_TAGS = (
+    "pack:witwin.scene",
+    "word-intent:human",
+    "word-intent:person",
+    "word-intent:someone",
+    "intent:人物",
+    "intent:人类",
+    "intent:一个人",
+    "hint-term:human animation",
+    "hint-term:person in the room",
+    "hint-term:human in the room",
+    "hint-explicit-intent:add one human",
+    "hint-explicit-intent:add a human",
+    "hint-explicit-intent:create a human",
+    "hint-explicit-intent:put a human",
+    "hint-explicit-intent:someone walking",
+    "hint-explicit-intent:someone stroll",
+    "hint-explicit-intent:person walking",
+    "hint-explicit-intent:person stroll",
+    "hint-explicit-intent:生成一个人",
+    "hint-explicit-intent:添加一个人",
+    "hint-explicit-intent:人物行走",
+    "hint-requires-pack",
+    "hint-boost:20",
+)
+
+
 _DESCRIPTION = (
     "Generate an SMPL humanoid motion asset from a text prompt using the Genesis MDM Tiny runtime. "
     "Use this when the user asks for text-to-human-motion, text-to-SMPL, or generated humanoid animation. "
@@ -166,6 +193,7 @@ def make_generate_humanoid_animation_tool(ctx: Any, *, backend: Backend | None =
         permission_scope="genesis.generate_scene_animation",
         permission_tier="execute",
         timeout=900.0,
+        tags=_HUMANOID_ANIMATION_RETRIEVAL_TAGS,
     )
     async def generate_humanoid_animation(args: dict[str, Any]) -> dict[str, Any]:
         return await asyncio.to_thread(_run_generate_animation, ctx, args, backend)
