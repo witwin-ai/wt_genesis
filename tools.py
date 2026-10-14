@@ -261,6 +261,8 @@ def make_apply_humanoid_motion_preset_tool(ctx: Any) -> Tool:
             "hint-term:slip and fall",
             "hint-term:accidental fall",
             "hint-explicit-intent:person slips",
+            "hint-explicit-intent:person lose their balance and fall",
+            "hint-explicit-intent:person loses balance and falls",
             "hint-explicit-intent:human falls accidentally",
             "hint-requires-pack",
             "hint-boost:24",
