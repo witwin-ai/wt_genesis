@@ -29,30 +29,34 @@ def trim_preparation(
     destination: Path,
     stand: int,
     falling: int,
-    articulation: int,
+    landing_tilt_radians: float,
 ) -> None:
     with np.load(source) as archive:
         payload = {key: archive[key] for key in archive.files}
 
     pose = np.asarray(payload["smpl_pose"], dtype=np.float32).copy()
     root = np.asarray(payload["root"], dtype=np.float32).copy()
-    if not (0 <= stand < articulation < falling < pose.shape[0]):
-        raise ValueError("expected stand < articulation < falling within the clip")
+    if not (0 <= stand < falling < pose.shape[0]):
+        raise ValueError("expected stand < falling within the clip")
 
     count = falling - stand + 1
-    # Tilt the whole body as soon as balance is lost.  Keep the articulated
-    # standing pose until late in the fall so the interpolation cannot create
-    # a squat or burpee-like preparation.
-    pose[stand : falling + 1, 0] = _blend_axis_angles(
-        pose[stand, :1], pose[falling, :1], count,
-    )[:, 0]
-    articulated_count = falling - articulation + 1
-    pose[stand:articulation, 1:] = pose[stand, 1:]
-    pose[articulation : falling + 1, 1:] = _blend_axis_angles(
-        pose[stand, 1:], pose[falling, 1:], articulated_count,
-    )
+    source_fall_pose = pose[falling].copy()
+    landing_pose = pose[stand].copy()
+    landing_pose[0] = (
+        Rotation.from_rotvec([landing_tilt_radians, 0.0, 0.0])
+        * Rotation.from_rotvec(pose[stand, 0])
+    ).as_rotvec()
+    # Retain the generated arm reaction, but keep the standing lower body.
+    # The whole-body root tilt now causes the fall instead of hip/knee flexion.
+    landing_pose[13:] = source_fall_pose[13:]
+    pose[stand : falling + 1] = _blend_axis_angles(pose[stand], landing_pose, count)
+    pose[falling:] = landing_pose
+
+    landing_root = root[falling].copy()
+    landing_root[1] = 0.35
     fractions = np.linspace(0.0, 1.0, count, dtype=np.float32)[:, None]
-    root[stand : falling + 1] = root[stand] + fractions * (root[falling] - root[stand])
+    root[stand : falling + 1] = root[stand] + fractions * (landing_root - root[stand])
+    root[falling:] = landing_root
 
     payload["smpl_pose"] = pose
     payload["root"] = root
@@ -69,14 +73,14 @@ def main() -> None:
     parser.add_argument("destination", type=Path)
     parser.add_argument("--stand-frame", type=int, default=44)
     parser.add_argument("--falling-frame", type=int, default=52)
-    parser.add_argument("--articulation-frame", type=int, default=48)
+    parser.add_argument("--landing-tilt-radians", type=float, default=1.35)
     args = parser.parse_args()
     trim_preparation(
         args.source,
         args.destination,
         args.stand_frame,
         args.falling_frame,
-        args.articulation_frame,
+        args.landing_tilt_radians,
     )
 
 
