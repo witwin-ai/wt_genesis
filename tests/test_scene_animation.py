@@ -302,6 +302,65 @@ def test_generate_humanoid_animation_offsets_all_baked_tracks(tmp_path, monkeypa
     assert validated_intervals == [(4.5, pytest.approx(4.5 + result.duration))]
 
 
+def test_floor_penetration_is_lifted_and_revalidated_without_ignoring_obstacles(
+    tmp_path, monkeypatch,
+):
+    from witwin_server.core.scene import Scene
+    import wt_genesis.adapter.scene_animation as scene_animation
+    from wt_genesis.adapter.scene_animation import create_humanoid_animation
+
+    monkeypatch.setattr(
+        scene_animation,
+        "build_smpl_skin_asset",
+        lambda *args, **kwargs: _tiny_skin_asset(),
+    )
+    scene = Scene(scene_id="main")
+    reports = [
+        {
+            "status": "overlap_detected",
+            "samples": 6,
+            "affected_samples": 2,
+            "contacts": [{
+                "time": 1.1,
+                "body_part": "torso",
+                "obstacle_id": "floor",
+                "obstacle": "floor",
+                "kind": "conservative_convex_overlap",
+                "penetration_m": 0.08,
+            }],
+        },
+        {
+            "status": "clear_at_samples",
+            "samples": 6,
+            "affected_samples": 0,
+            "contacts": [],
+        },
+    ]
+
+    def validate(*_args):
+        return reports.pop(0)
+
+    result = create_humanoid_animation(
+        scene=scene,
+        project_dir=tmp_path,
+        prompt="a person falls",
+        motion_length=0.15,
+        device=-1,
+        start_time=1.0,
+        playback_mode="baked_transforms",
+        backend=_root_motion_backend,
+        body_validator=validate,
+    )
+
+    correction = result.trajectory_clearance["floor_support_correction"]
+    assert correction["status"] == "applied_and_revalidated"
+    assert correction["total_lift_m"] == pytest.approx(0.081)
+    track = scene.timeline_manager.clip.get_track(
+        result.body_object_id, "Transform", "position",
+    )
+    assert track.keyframes[-1].value[1] == pytest.approx(0.081)
+
+
 def test_generate_humanoid_animation_preserves_initial_vertical_root_translation(tmp_path, monkeypatch):
     from witwin_server.core.scene import Scene
     import wt_genesis.adapter.scene_animation as scene_animation

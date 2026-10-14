@@ -254,8 +254,12 @@ def create_humanoid_animation(
         timeline.record_keyframes(keyframes)
         verify_recorded_baked_playback(timeline, keyframes, playback)
         if body_validator is not None:
-            trajectory_clearance = _validated_body_clearance(
-                body_validator(scene, body_obj.id, start_time, animation_end)
+            trajectory_clearance = _validate_with_floor_support_correction(
+                scene,
+                body_obj.id,
+                start_time,
+                animation_end,
+                body_validator,
             )
         playback_track = ((body_obj.id, "Transform", "position")
                           if playback_mode == "baked_transforms"
@@ -302,6 +306,95 @@ def create_humanoid_animation(
             autoplay=bool(autoplay),
             loop=bool(loop),
         )
+
+
+def _validate_with_floor_support_correction(
+    scene: Any,
+    object_id: str,
+    start_time: float,
+    end_time: float,
+    validator: Callable[[Any, str, float, float], dict[str, Any]],
+    *,
+    maximum_correction_m: float = 0.35,
+    maximum_attempts: int = 3,
+) -> dict[str, Any]:
+    """Lift only floor-contacting suffixes, then rerun final-LBS validation."""
+
+    corrections = []
+    total_correction = 0.0
+    for _attempt in range(maximum_attempts + 1):
+        report = validator(scene, object_id, start_time, end_time)
+        try:
+            result = _validated_body_clearance(report)
+        except HumanoidTrajectoryBlocked as exc:
+            blockers = exc.blockers
+            if not blockers or any(
+                not any(
+                    label in f"{item.get('object_id', '')} {item.get('name', '')}".lower()
+                    for label in ("floor", "rug", "carpet")
+                )
+                for item in blockers
+            ):
+                raise
+            penetrations = [item.get("penetration_m") for item in blockers]
+            times = [item.get("time") for item in blockers]
+            if (
+                any(value is None or not math.isfinite(float(value)) for value in penetrations)
+                or any(value is None or not math.isfinite(float(value)) for value in times)
+            ):
+                raise
+            correction = max(float(value) for value in penetrations) + 0.001
+            if total_correction + correction > maximum_correction_m + 1e-9:
+                raise
+            first_contact = min(float(value) for value in times)
+            _lift_root_track_suffix(
+                scene,
+                object_id,
+                first_contact=first_contact,
+                correction=correction,
+            )
+            total_correction += correction
+            corrections.append({
+                "first_contact_s": first_contact,
+                "lift_m": correction,
+            })
+            continue
+        if corrections:
+            result["floor_support_correction"] = {
+                "status": "applied_and_revalidated",
+                "attempts": len(corrections),
+                "total_lift_m": total_correction,
+                "maximum_lift_m": maximum_correction_m,
+                "corrections": corrections,
+                "scope": "bounded upward root correction after floor-only contact",
+            }
+        return result
+    raise ValueError("humanoid floor support correction did not converge")
+
+
+def _lift_root_track_suffix(
+    scene: Any,
+    object_id: str,
+    *,
+    first_contact: float,
+    correction: float,
+    blend_seconds: float = 0.2,
+) -> None:
+    timeline = getattr(scene, "timeline_manager", None)
+    track = (
+        timeline.clip.get_track(object_id, "Transform", "position")
+        if timeline is not None else None
+    )
+    if track is None or not track.keyframes:
+        raise ValueError("humanoid floor correction requires a recorded root position track")
+    blend_start = first_contact - blend_seconds
+    for keyframe in track.keyframes:
+        alpha = min(1.0, max(0.0, (float(keyframe.time) - blend_start) / blend_seconds))
+        if alpha <= 0.0:
+            continue
+        value = list(keyframe.value)
+        value[1] = float(value[1]) + correction * alpha
+        keyframe.value = value
 
 
 def _validated_body_clearance(report: dict[str, Any]) -> dict[str, Any]:
