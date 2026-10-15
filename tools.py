@@ -13,6 +13,7 @@ from witwin_server.tools.base import Tool, ToolError, tool
 
 from witwin.genesis.assets import inspect_runtime
 from witwin.genesis.motion_export import Backend, generate_motion_asset
+from .adapter.kimodo_backend import configured_backend, inspect_kimodo_runtime
 from .adapter.scene_animation import create_humanoid_animation
 from .adapter.trajectory_clearance import HumanoidTrajectoryBlocked
 
@@ -45,7 +46,7 @@ _HUMANOID_ANIMATION_RETRIEVAL_TAGS = (
 
 
 _DESCRIPTION = (
-    "Generate an SMPL humanoid motion asset from a text prompt using the Genesis MDM Tiny runtime. "
+    "Generate an SMPL humanoid motion asset from a text prompt using the configured Genesis model backend. "
     "Use this when the user asks for text-to-human-motion, text-to-SMPL, or generated humanoid animation. "
     "The tool writes a .npz file under the Project's assets/motions directory. The returned path can be "
     "loaded by wt_humanoid's SMPLMotion component with pose_key='smpl_pose', betas_key='shape', trans_key='root'."
@@ -156,9 +157,18 @@ def make_check_genesis_runtime_tool(ctx: Any) -> Tool:
     def check_genesis_runtime(args: dict[str, Any]) -> dict[str, object]:
         del args
         payload = inspect_runtime().to_dict()
+        active_backend = _active_backend_name()
+        kimodo_runtime = inspect_kimodo_runtime()
         radar_runtime = _inspect_radar_pipeline_runtime()
+        payload["active_backend"] = active_backend
+        payload["kimodo_runtime"] = kimodo_runtime
         payload["radar_runtime"] = radar_runtime
-        payload["pipeline_ready"] = bool(payload["ready"] and radar_runtime["ready"])
+        generator_ready = (
+            bool(kimodo_runtime["ready"] and not payload.get("missing_smpl_files"))
+            if active_backend == "kimodo"
+            else bool(payload["ready"])
+        )
+        payload["pipeline_ready"] = bool(generator_ready and radar_runtime["ready"])
         # Preserve the legacy key, but do not present a package check as a
         # successful scene measurement or confirmation of optional interfaces.
         payload["readiness_scope"] = "packages_models_native_imports_and_cuda_only"
@@ -206,6 +216,7 @@ def make_generate_humanoid_animation_tool(ctx: Any, *, backend: Backend | None =
 
 
 def _run_generate(args: dict[str, Any], backend: Backend | None) -> dict[str, Any]:
+    backend = backend if backend is not None else configured_backend()
     result = generate_motion_asset(
         default_project_dir(),
         prompt=args["prompt"],
@@ -230,6 +241,7 @@ def _run_generate(args: dict[str, Any], backend: Backend | None) -> dict[str, An
 
 
 def _run_generate_animation(ctx: Any, args: dict[str, Any], backend: Backend | None) -> dict[str, Any]:
+    backend = backend if backend is not None else configured_backend()
     scene = _get_scene(ctx, args.get("scene_id"))
     if scene is None:
         raise ToolError("no active scene", code="no_scene")
@@ -265,6 +277,10 @@ def _run_generate_animation(ctx: Any, args: dict[str, Any], backend: Backend | N
             detail={"blockers": exc.blockers},
         ) from exc
     return _finalize_scene_animation(server, scene, result)
+
+
+def _active_backend_name() -> str:
+    return "kimodo" if configured_backend() is not None else "mdm_tiny"
 
 
 def _finalize_scene_animation(server: Any, scene: Any, result: Any) -> dict[str, Any]:

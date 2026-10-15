@@ -96,6 +96,11 @@ def test_check_genesis_runtime_tool_returns_structured_status(monkeypatch):
     monkeypatch.setattr(genesis_tools, "inspect_runtime", lambda: Status())
     monkeypatch.setattr(
         genesis_tools,
+        "inspect_kimodo_runtime",
+        lambda: {"ready": False, "issues": ["missing auth"]},
+    )
+    monkeypatch.setattr(
+        genesis_tools,
         "_inspect_radar_pipeline_runtime",
         lambda: {"ready": False, "issues": ["CUDA is unavailable"]},
     )
@@ -109,6 +114,21 @@ def test_check_genesis_runtime_tool_returns_structured_status(monkeypatch):
     assert result["readiness_scope"] == "packages_models_native_imports_and_cuda_only"
     assert result["human_radar_validation"] == "not_run"
     assert result["radar_runtime"]["issues"] == ["CUDA is unavailable"]
+    assert result["active_backend"] == "mdm_tiny"
+
+
+def test_generate_tool_uses_configured_kimodo_backend(tmp_path, monkeypatch):
+    import wt_genesis.tools as genesis_tools
+
+    monkeypatch.setenv("WITWIN_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setenv("WITWIN_GENESIS_BACKEND", "kimodo")
+    monkeypatch.setattr(genesis_tools, "configured_backend", lambda: _backend)
+    tool = genesis_tools.make_generate_smpl_motion_tool(_FakeContext())
+
+    result = asyncio.run(tool.call({"prompt": "a person waves"}))
+
+    assert result["ok"] is True
+    assert result["frame_count"] == 4
 
 
 def test_radar_pipeline_doctor_separates_versions_native_imports_and_cuda(monkeypatch):
