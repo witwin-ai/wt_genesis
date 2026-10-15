@@ -337,6 +337,10 @@ def test_floor_penetration_is_lifted_and_revalidated_without_ignoring_obstacles(
             "status": "overlap_detected",
             "samples": 6,
             "affected_samples": 2,
+            "automatic_relocation": {
+                "status": "applied_and_revalidated",
+                "motion_changed": False,
+            },
             "contacts": [{
                 "time": 1.1,
                 "body_part": "torso",
@@ -376,6 +380,10 @@ def test_floor_penetration_is_lifted_and_revalidated_without_ignoring_obstacles(
     correction = result.trajectory_clearance["floor_support_correction"]
     assert correction["status"] == "applied_and_revalidated"
     assert correction["total_lift_m"] == pytest.approx(0.081)
+    assert result.trajectory_clearance["automatic_relocation"] == {
+        "status": "applied_and_revalidated",
+        "motion_changed": False,
+    }
     assert result.trajectory_clearance["limitations"] == [
         "Finite samples are not CCD.",
     ]

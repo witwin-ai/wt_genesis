@@ -326,8 +326,11 @@ def _validate_with_floor_support_correction(
 
     corrections = []
     total_correction = 0.0
+    automatic_relocation = None
     for _attempt in range(maximum_attempts + 1):
         report = validator(scene, object_id, start_time, end_time)
+        if report.get("automatic_relocation"):
+            automatic_relocation = report["automatic_relocation"]
         try:
             result = _validated_body_clearance(report)
         except HumanoidTrajectoryBlocked as exc:
@@ -376,6 +379,8 @@ def _validate_with_floor_support_correction(
                 "corrections": corrections,
                 "scope": "bounded upward root correction after floor-only contact",
             }
+        if automatic_relocation:
+            result["automatic_relocation"] = automatic_relocation
         return result
     raise ValueError("humanoid floor support correction did not converge")
 
