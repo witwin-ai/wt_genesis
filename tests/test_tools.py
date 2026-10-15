@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass
 
 import numpy as np
+from types import SimpleNamespace
 
 
 def _backend(prompts, **kwargs):
@@ -59,6 +60,30 @@ def test_generate_smpl_motion_tool_defaults_to_gpu_device_zero(tmp_path, monkeyp
     asyncio.run(tool.call({"prompt": "a person waves"}))
 
     assert captured["device"] == 0
+
+
+def test_humanoid_collision_bridge_delegates_relocation_to_motion_matching(monkeypatch):
+    import wt_genesis.tools as genesis_tools
+
+    captured = {}
+
+    def validate(scene, args, project_root):
+        captured.update(scene=scene, args=args, project_root=project_root)
+        return {"status": "clear_at_samples", "automatic_relocation": {"status": "applied"}}
+
+    module = SimpleNamespace(body_collision_report_with_relocation=validate)
+    monkeypatch.setattr(genesis_tools.importlib, "import_module", lambda _name: module)
+    monkeypatch.setattr(genesis_tools, "default_project_dir", lambda: "project-root")
+    scene = object()
+
+    result = genesis_tools._motion_matching_body_validation(scene, "human", 1.0, 3.0)
+
+    assert result["automatic_relocation"]["status"] == "applied"
+    assert captured["scene"] is scene
+    assert captured["project_root"] == "project-root"
+    assert captured["args"]["object_id"] == "human"
+    assert captured["args"]["start"] == 1.0
+    assert captured["args"]["end"] == 3.0
 
 
 def test_check_genesis_runtime_tool_returns_structured_status(monkeypatch):

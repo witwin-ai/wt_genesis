@@ -295,7 +295,10 @@ def _motion_matching_body_validation(
     """Run the shared final-LBS validator before the Genesis transaction commits."""
     try:
         module = importlib.import_module("witwin_motion_matching.body_collision_service")
-        validate = getattr(module, "body_collision_report")
+        # Motion Matching owns collision recovery. Genesis still owns only the
+        # generated motion and scene binding; the bridge may translate the
+        # unchanged root track and revalidate it against the furnished room.
+        validate = getattr(module, "body_collision_report_with_relocation")
     except (ImportError, AttributeError) as exc:
         raise ToolError(
             "humanoid body safety requires the Motion Matching collision provider",
