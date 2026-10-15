@@ -422,6 +422,7 @@ def _validated_body_clearance(report: dict[str, Any]) -> dict[str, Any]:
         else:
             blocking.append(contact)
     if blocking:
+        relocation = report.get("automatic_relocation")
         blockers = [
             {
                 "object_id": str(contact.get("obstacle_id") or contact.get("obstacle") or "unknown"),
@@ -431,8 +432,9 @@ def _validated_body_clearance(report: dict[str, Any]) -> dict[str, Any]:
                 "penetration_m": contact.get("penetration_m"),
                 "kind": contact.get("kind"),
                 "segment_index": -1,
+                **({"automatic_relocation": relocation} if relocation and index == 0 else {}),
             }
-            for contact in blocking[:20]
+            for index, contact in enumerate(blocking[:20])
         ]
         raise HumanoidTrajectoryBlocked(blockers)
     return {
