@@ -17,6 +17,10 @@ def test_kimodo_backend_runs_isolated_cli_and_returns_genesis_contract(tmp_path,
     monkeypatch.setenv("WITWIN_KIMODO_PYTHON", str(fake_python))
     monkeypatch.setenv("WITWIN_KIMODO_ROOT", str(source))
     monkeypatch.setenv("HF_HOME", str(token_home))
+    monkeypatch.setattr(
+        backend, "_probe_runtime",
+        lambda python, root: {"importable": True, "cuda_available": True, "detail": "ok"},
+    )
     captured = {}
 
     def run(command, **kwargs):
@@ -50,6 +54,10 @@ def test_kimodo_runtime_reports_missing_auth_separately(tmp_path, monkeypatch):
     monkeypatch.setenv("HF_HOME", str(tmp_path / "empty-hf"))
     monkeypatch.delenv("HF_TOKEN", raising=False)
     monkeypatch.setattr(backend.Path, "home", classmethod(lambda cls: tmp_path / "empty-home"))
+    monkeypatch.setattr(
+        backend, "_probe_runtime",
+        lambda python, root: {"importable": True, "cuda_available": True, "detail": "ok"},
+    )
 
     status = backend.inspect_kimodo_runtime()
 

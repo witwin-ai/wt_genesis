@@ -37,6 +37,15 @@ def inspect_kimodo_runtime() -> dict[str, Any]:
         issues.append(f"Kimodo Python executable does not exist: {python}")
     if not (root / "kimodo" / "scripts" / "generate.py").is_file():
         issues.append(f"Kimodo source checkout is missing: {root}")
+    import_probe = _probe_runtime(python, root) if python.is_file() else {
+        "importable": False,
+        "cuda_available": False,
+        "detail": "Python executable is missing",
+    }
+    if not import_probe["importable"]:
+        issues.append(f"Kimodo cannot import in its isolated runtime: {import_probe['detail']}")
+    elif not import_probe["cuda_available"]:
+        issues.append("CUDA is unavailable in the isolated Kimodo runtime")
     if not has_token:
         issues.append("Hugging Face authentication is missing for the gated Llama text encoder")
     return {
@@ -46,6 +55,7 @@ def inspect_kimodo_runtime() -> dict[str, Any]:
         "source_root": str(root),
         "text_encoder_device": os.environ.get("TEXT_ENCODER_DEVICE", "cpu"),
         "huggingface_authenticated": has_token,
+        "import_probe": import_probe,
         "issues": issues,
     }
 
@@ -107,4 +117,31 @@ def _kimodo_root() -> Path:
 
 
 def _kimodo_python() -> Path:
-    return Path(os.environ.get("WITWIN_KIMODO_PYTHON", sys.executable)).expanduser().resolve()
+    configured = os.environ.get("WITWIN_KIMODO_PYTHON")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    sibling = Path(sys.executable).resolve().parent.parent / "witwin-kimodo" / "python.exe"
+    return sibling if sibling.is_file() else Path(sys.executable).resolve()
+
+
+def _probe_runtime(python: Path, root: Path) -> dict[str, Any]:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+        value for value in (str(root), env.get("PYTHONPATH")) if value
+    )
+    try:
+        result = subprocess.run(
+            [str(python), "-c", "import kimodo, torch; print(int(torch.cuda.is_available()))"],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"importable": False, "cuda_available": False, "detail": str(exc)}
+    return {
+        "importable": True,
+        "cuda_available": result.stdout.strip().splitlines()[-1:] == ["1"],
+        "detail": "ok",
+    }
