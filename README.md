@@ -5,6 +5,36 @@ and keys the Timeline. WT Radar 0.4 consumes the existing hydrated
 `SkinnedMesh` and baked Transform tracks; Genesis does not add a second
 Radar-specific target component.
 
+## Optional Kimodo backend
+
+Genesis keeps the same Agent tools and canonical SMPL asset contract when the
+generator is changed. To opt into the isolated NVIDIA Kimodo backend before
+starting Studio, set:
+
+```powershell
+$env:WITWIN_GENESIS_BACKEND = "kimodo"
+$env:WITWIN_KIMODO_PYTHON = "C:\Users\WQZ\AppData\Local\anaconda3\envs\witwin-kimodo\python.exe"
+$env:WITWIN_KIMODO_ROOT = "C:\WiTwin\repos\kimodo"
+$env:TEXT_ENCODER_DEVICE = "cpu"
+```
+
+The default Kimodo checkpoint is `Kimodo-SOMA-RP-v1.1`. Its 77-joint SOMA
+output is retargeted at the integration boundary to the existing 24-joint SMPL
+timeline; WT Genesis itself is not modified. Set `WITWIN_KIMODO_MODEL` only for
+an intentional checkpoint comparison. The original `mdm_tiny` backend remains
+the default unless `WITWIN_GENESIS_BACKEND=kimodo` is present.
+
+`check_genesis_runtime` reports `active_backend` and a separate
+`kimodo_runtime` diagnosis. Kimodo requires local Hugging Face authentication
+with access to its gated Llama text encoder. Never put an HF token in a Project,
+scene, prompt, source file, or Agent message; authenticate in the isolated
+environment with `hf auth login`.
+
+The SOMA-to-SMPL path preserves the major body chains and resamples rotations
+with spherical interpolation. It is an integration retarget, not a claim of
+motion-quality equivalence; quality must be judged from a generated Studio
+timeline and compared against the same prompt/seed on the original backend.
+
 ## Preflight and scene animation
 
 Run `witwin.genesis.check_genesis_runtime` first. Its `pipeline_ready` field is
