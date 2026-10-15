@@ -627,7 +627,9 @@ def _build_root_motion_tracks(motion_asset: MotionExportResult, position: list[f
     poses = np.asarray(motion.poses, dtype=np.float32).reshape(frame_count, -1)
     root_orient = np.zeros((frame_count, 3), dtype=np.float32)
     root_orient[:, : min(3, poses.shape[1])] = poses[:, : min(3, poses.shape[1])]
-    rotations = Rotation.from_rotvec(root_orient).as_euler("ZXY", degrees=False).astype(float).tolist()
+    rotations = _continuous_euler_values(
+        Rotation.from_rotvec(root_orient).as_euler("ZXY", degrees=False).astype(float).tolist()
+    )
     return {"positions": positions, "rotations": rotations}
 
 
@@ -645,15 +647,18 @@ def _build_skeleton_rotation_keyframes(body_obj: SceneObject, motion_asset: Moti
     track_count = 0
     keyframes: list[dict[str, Any]] = []
     for bone_index, bone_id in enumerate(skinned.bone_ids):
+        rotations = _continuous_euler_values([
+            _bone_rotation_euler(poses[frame], bone_index)
+            for frame in range(motion.frame_count)
+        ])
         for frame in range(motion.frame_count):
             time = frame / motion_asset.fps
-            rotation = _bone_rotation_euler(poses[frame], bone_index)
             keyframes.append(
                 {
                     "object_id": bone_id,
                     "component_name": "Transform",
                     "field_name": "rotation",
-                    "value": rotation,
+                    "value": rotations[frame],
                     "time": time,
                     "interpolation": InterpolationType.LINEAR,
                 }
@@ -671,6 +676,28 @@ def _bone_rotation_euler(pose: np.ndarray, bone_index: int) -> list[float]:
     if available:
         rotvec[:available] = pose[start : start + available]
     return Rotation.from_rotvec(rotvec).as_euler("ZXY", degrees=False).astype(float).tolist()
+
+
+def _continuous_euler_values(values: list[list[float]]) -> list[list[float]]:
+    """Select the ZXY-equivalent representation nearest the preceding frame."""
+    if not values:
+        return []
+    result = [list(values[0])]
+    for raw in values[1:]:
+        alternatives = (
+            list(raw),
+            [raw[0] + math.pi, math.pi - raw[1], raw[2] + math.pi],
+            [raw[0] + math.pi, -math.pi - raw[1], raw[2] + math.pi],
+        )
+        previous = np.asarray(result[-1], dtype=float)
+        candidates = []
+        for alternative in alternatives:
+            candidate = np.asarray(alternative, dtype=float)
+            candidate += 2.0 * math.pi * np.round((previous - candidate) / (2.0 * math.pi))
+            candidates.append(candidate)
+        chosen = min(candidates, key=lambda item: float(np.linalg.norm(item - previous)))
+        result.append(chosen.tolist())
+    return result
 
 
 def _skinned_mesh_visual_status(skinned_status: dict[str, Any], *, skeleton_track_count: int) -> dict[str, Any]:

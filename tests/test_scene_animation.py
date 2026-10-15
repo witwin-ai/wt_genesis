@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import math
 
 import numpy as np
 import pytest
@@ -19,6 +20,22 @@ def _animated_backend(prompts, **kwargs):
         dtype=np.float32,
     )
     return {"smpl_pose": pose, "smpl_betas": betas, "smpl_trans": trans}
+
+
+def test_baked_euler_values_use_nearest_equivalent_across_wrap_and_gimbal():
+    from wt_genesis.adapter.scene_animation import _continuous_euler_values
+
+    values = _continuous_euler_values([
+        [3.10, -1.21, 2.83],
+        [-3.14, -1.25, 2.88],
+        [-0.56, -1.23, -2.29],
+        [1.16, 0.67, 3.11],
+    ])
+
+    assert abs(values[1][0] - values[0][0]) < 0.1
+    # The alternate Tait-Bryan representation avoids an artificial >pi jump
+    # when the middle angle crosses its canonical branch.
+    assert max(abs(values[3][axis] - values[2][axis]) for axis in range(3)) < math.pi
 
 
 def test_generate_humanoid_animation_tool_creates_scene_timeline_and_playback(tmp_path, monkeypatch):
