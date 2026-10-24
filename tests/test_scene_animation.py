@@ -114,6 +114,44 @@ def test_generate_humanoid_animation_tool_creates_scene_timeline_and_playback(tm
     assert child_bone.get_component("Transform").get_quaternion().tolist() != pytest.approx([0.0, 0.0, 0.0, 1.0])
 
 
+def test_generate_humanoid_animation_reuses_existing_body_for_follow_up(tmp_path, monkeypatch):
+    from witwin_server.core.scene import Scene
+    import wt_genesis.adapter.scene_animation as scene_animation
+    from wt_genesis.tools import make_generate_humanoid_animation_tool
+
+    monkeypatch.setenv("WITWIN_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setattr(scene_animation, "build_smpl_skin_asset", lambda *args, **kwargs: _tiny_skin_asset())
+    scene = Scene(scene_id="main")
+    tool = make_generate_humanoid_animation_tool(_FakeContext(scene), backend=_animated_backend)
+
+    first = asyncio.run(tool.call({
+        "prompt": "a person waves",
+        "motion_length": 0.2,
+        "playback_mode": "baked_transforms",
+    }))
+    object_ids_before = set(scene.objects)
+    first_end = first["start_time"] + first["duration"]
+
+    second = asyncio.run(tool.call({
+        "prompt": "a person waves",
+        "motion_length": 0.2,
+        "playback_mode": "baked_transforms",
+        "body_object_id": first["body_object_id"],
+    }))
+
+    assert first["actor_reused"] is False
+    assert second["actor_reused"] is True
+    assert second["body_object_id"] == first["body_object_id"]
+    assert second["motion_object_id"] != first["motion_object_id"]
+    assert second["start_time"] > first_end
+    assert object_ids_before.issubset(set(scene.objects))
+    assert sum(
+        obj.get_component("SMPLBody") is not None
+        for obj in scene.objects.values()
+    ) == 1
+    assert scene.get_object(second["motion_object_id"]).get_component("SMPLMotion").target_body["object_id"] == first["body_object_id"]
+
+
 def test_generate_humanoid_animation_rejects_blocked_root_sweep_before_scene_write(tmp_path, monkeypatch):
     from witwin_server.core.scene import Scene
     import wt_genesis.adapter.scene_animation as scene_animation

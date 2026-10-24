@@ -92,7 +92,8 @@ _INPUT_SCHEMA = {
 }
 
 _ANIMATION_DESCRIPTION = (
-    "Generate an SMPL humanoid animation from a text prompt, place it in the current Studio scene, "
+    "Generate an SMPL humanoid animation from a text prompt, either create a new person or reuse an "
+    "existing Genesis SMPL body by body_object_id, and place or continue it in the current Studio scene. "
     "bind the generated motion to wt_humanoid SMPLBody/SMPLMotion components, and key the timeline "
     "so timeline playback drives the humanoid pose plus root Transform position/rotation. Use this "
     "for user requests like 'generate a human animation', 'make a person walk', or 'create an SMPL "
@@ -115,6 +116,11 @@ _ANIMATION_INPUT_SCHEMA = {
         "body_name": {
             "type": "string",
             "description": "Optional scene object name for the generated SMPL body.",
+        },
+        "body_object_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Existing Genesis SMPL body to animate in place. Omit to create a new humanoid.",
         },
         "motion_name": {
             "type": "string",
@@ -258,9 +264,10 @@ def _run_generate_animation(ctx: Any, args: dict[str, Any], backend: Backend | N
             smplify_iters=int(args.get("smplify_iters", 20)),
             output_name=args.get("output_name"),
             body_name=args.get("body_name"),
+            body_object_id=args.get("body_object_id"),
             motion_name=args.get("motion_name"),
             position=args.get("position"),
-            start_time=float(args.get("start_time", 0.0)),
+            start_time=(float(args["start_time"]) if "start_time" in args else None),
             autoplay=bool(args.get("autoplay", False)),
             loop=bool(args.get("loop", True)),
             playback_mode=str(args.get("playback_mode", "legacy_controller")),

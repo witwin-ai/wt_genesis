@@ -41,6 +41,7 @@ class SceneAnimationResult:
     duration: float
     autoplay: bool
     loop: bool
+    actor_reused: bool
 
     def to_dict(self) -> dict[str, Any]:
         payload = self.motion_asset.to_dict()
@@ -59,6 +60,7 @@ class SceneAnimationResult:
                 "duration": self.duration,
                 "autoplay": self.autoplay,
                 "loop": self.loop,
+                "actor_reused": self.actor_reused,
             }
         )
         return payload
@@ -76,9 +78,10 @@ def create_humanoid_animation(
     smplify_iters: int = 20,
     output_name: str | None = None,
     body_name: str | None = None,
+    body_object_id: str | None = None,
     motion_name: str | None = None,
     position: Sequence[float] | None = None,
-    start_time: float = 0.0,
+    start_time: float | None = None,
     autoplay: bool = False,
     loop: bool = True,
     playback_mode: str = "legacy_controller",
@@ -95,14 +98,24 @@ def create_humanoid_animation(
     if scene is None:
         raise ValueError("scene is required")
     playback_mode = validate_playback_mode(playback_mode)
-    start_time = float(start_time)
-    if not math.isfinite(start_time) or start_time < 0.0:
-        raise ValueError("start_time must be finite and non-negative")
     require_write = getattr(scene, "_require_author_write", None)
     if callable(require_write):
         require_write("witwin.genesis.generate_humanoid_animation")
-    position_value = _normalize_position(position)
-
+    # Reject malformed placement before invoking an expensive generation
+    # backend. None remains meaningful for existing-actor continuation.
+    requested_position = _normalize_position(position) if position is not None else None
+    actor_reused = body_object_id is not None
+    if actor_reused:
+        body_obj = scene.get_object(str(body_object_id))
+        if body_obj is None:
+            raise ValueError(f"existing humanoid not found: {body_object_id}")
+        body = body_obj.get_component("SMPLBody")
+        skinned = body_obj.get_component("SkinnedMesh")
+        transform = body_obj.get_component("Transform")
+        if body is None or skinned is None or transform is None or not skinned.bone_ids:
+            raise ValueError("body_object_id must reference a Genesis SMPL body with a bound SkinnedMesh")
+        if body_name is not None and body_name != body_obj.name:
+            raise ValueError("body_name cannot rename an existing humanoid continuation")
     if motion_asset is None:
         motion_asset = generate_motion_asset(
             project_dir,
@@ -115,13 +128,26 @@ def create_humanoid_animation(
             output_name=output_name,
             backend=backend,
         )
+    if actor_reused:
+        if start_time is None:
+            start_time = _continuation_start_time(scene, body_obj, motion_asset.fps)
+        if requested_position is None:
+            position_value = _continuation_position(scene, body_obj)
+        else:
+            position_value = requested_position
+    else:
+        position_value = requested_position or _normalize_position(None)
+        start_time = 0.0 if start_time is None else start_time
+        body_obj, body = _create_smpl_body(
+            body_name or _default_name("Genesis SMPL Body", prompt),
+            position_value,
+        )
+    start_time = float(start_time)
+    if not math.isfinite(start_time) or start_time < 0.0:
+        raise ValueError("start_time must be finite and non-negative")
     root_motion = _build_root_motion_tracks(motion_asset, position_value)
-
-    body_obj, body = _create_smpl_body(
-        body_name or _default_name("Genesis SMPL Body", prompt),
-        root_motion["positions"][0],
-        root_motion["rotations"][0],
-    )
+    if not actor_reused:
+        body_obj.get_component("Transform").rotation = root_motion["rotations"][0]
 
     motion_obj, motion = _create_smpl_motion(
         motion_name or _default_name("Genesis SMPL Motion", prompt),
@@ -135,9 +161,10 @@ def create_humanoid_animation(
     motion.loop = "on" if loop else "off"
     motion.load_motion()
     motion.current_frame = 0
-    motion.apply_current_frame(body)
-    body.model_root = str(DEFAULT_MODEL_ROOT)
-    body.sync_platform_geometry()
+    if not actor_reused:
+        motion.apply_current_frame(body)
+        body.model_root = str(DEFAULT_MODEL_ROOT)
+        body.sync_platform_geometry()
     skin_asset = build_smpl_skin_asset(
         body.model_root,
         gender=body.gender,
@@ -160,9 +187,10 @@ def create_humanoid_animation(
     # A missing licensed SMPL file must not leave half-created scene objects.
     created_ids: list[str] = []
     with _new_animation_transaction(scene, created_ids):
-        body_obj.id = scene.allocate_id(body_obj.name)
-        created_ids.append(body_obj.id)
-        scene.add_object(body_obj)
+        if not actor_reused:
+            body_obj.id = scene.allocate_id(body_obj.name)
+            created_ids.append(body_obj.id)
+            scene.add_object(body_obj)
         motion_obj.id = scene.allocate_id(motion_obj.name)
         created_ids.append(motion_obj.id)
         scene.add_object(motion_obj)
@@ -171,21 +199,27 @@ def create_humanoid_animation(
             "object_name": body_obj.name,
             "component_type": "SMPLBody",
         }
-        bone_ids = [f"{body_obj.id}-smpl-bone-{index:02d}"
-                    for index in range(len(skin_asset.joint_positions))]
-        if any(scene.get_object(bone_id) is not None for bone_id in bone_ids):
-            raise ValueError("generated SMPL bone ids collide with existing scene objects")
-        created_ids.extend(bone_ids)
-        skinned_status = attach_smpl_skinned_mesh(
-            scene,
-            body_obj,
-            body,
-            model_root=body.model_root,
-            gender=body.gender,
-            shape=body.shape,
-            asset=skin_asset,
-        )
-        body.sync_skinned_mesh_pose()
+        if actor_reused:
+            skinned_status = {
+                "status": "reused_existing_skinned_mesh",
+                "bone_ids": list(body_obj.get_component("SkinnedMesh").bone_ids),
+            }
+        else:
+            bone_ids = [f"{body_obj.id}-smpl-bone-{index:02d}"
+                        for index in range(len(skin_asset.joint_positions))]
+            if any(scene.get_object(bone_id) is not None for bone_id in bone_ids):
+                raise ValueError("generated SMPL bone ids collide with existing scene objects")
+            created_ids.extend(bone_ids)
+            skinned_status = attach_smpl_skinned_mesh(
+                scene,
+                body_obj,
+                body,
+                model_root=body.model_root,
+                gender=body.gender,
+                shape=body.shape,
+                asset=skin_asset,
+            )
+            body.sync_skinned_mesh_pose()
 
         timeline = _ensure_timeline(scene)
         existing_tracks = bool(timeline.clip.tracks)
@@ -255,7 +289,9 @@ def create_humanoid_animation(
             for keyframe in keyframes:
                 keyframe["time"] = float(keyframe["time"]) + start_time
         timeline.record_keyframes(keyframes)
-        verify_recorded_baked_playback(timeline, keyframes, playback)
+        verify_recorded_baked_playback(
+            timeline, keyframes, playback, allow_existing=actor_reused,
+        )
         if body_validator is not None:
             trajectory_clearance = _validate_with_floor_support_correction(
                 scene,
@@ -309,6 +345,7 @@ def create_humanoid_animation(
             duration=duration,
             autoplay=bool(autoplay),
             loop=bool(loop),
+            actor_reused=actor_reused,
         )
 
 
@@ -597,6 +634,32 @@ def _ensure_timeline(scene: Any) -> TimelineManager:
     if getattr(scene, "timeline_manager", None) is None:
         scene.timeline_manager = TimelineManager(scene)
     return scene.timeline_manager
+
+
+def _continuation_position(scene: Any, body_obj: SceneObject) -> list[float]:
+    timeline = getattr(scene, "timeline_manager", None)
+    track = (
+        timeline.clip.get_track(body_obj.id, "Transform", "position")
+        if timeline is not None else None
+    )
+    if track is not None and track.keyframes:
+        return _normalize_position(track.keyframes[-1].value)
+    return _normalize_position(body_obj.get_component("Transform").position)
+
+
+def _continuation_start_time(scene: Any, body_obj: SceneObject, fps: float) -> float:
+    timeline = getattr(scene, "timeline_manager", None)
+    if timeline is None:
+        return 0.0
+    skinned = body_obj.get_component("SkinnedMesh")
+    actor_ids = {body_obj.id, *(skinned.bone_ids if skinned is not None else ())}
+    key_times = [
+        float(keyframe.time)
+        for track in timeline.clip.tracks.values()
+        if track.object_id in actor_ids
+        for keyframe in track.keyframes
+    ]
+    return (max(key_times) + 1.0 / float(fps)) if key_times else 0.0
 
 
 def _motion_duration(frame_count: int, fps: float) -> float:

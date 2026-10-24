@@ -131,6 +131,8 @@ def verify_recorded_baked_playback(
     timeline: Any,
     keyframes: list[dict[str, Any]],
     playback: dict[str, Any],
+    *,
+    allow_existing: bool = False,
 ) -> None:
     """Do not report a complete bake if the host merged, lost or altered keys.
 
@@ -148,10 +150,17 @@ def verify_recorded_baked_playback(
         expected.setdefault(path, []).append(key)
     for path, records in expected.items():
         track = timeline.clip.get_track(*path)
-        if track is None or len(track.keyframes) != len(records):
+        if track is None or (not allow_existing and len(track.keyframes) != len(records)):
             raise ValueError(f"Studio did not retain the complete baked track: {path}")
         actual = sorted(track.keyframes, key=lambda key: key.time)
         ordered = sorted(records, key=lambda key: key["time"])
+        if allow_existing:
+            actual = [
+                stored for stored in actual
+                if any(stored.time == record["time"] and stored.value == record["value"] for record in ordered)
+            ]
+            if len(actual) != len(ordered):
+                raise ValueError(f"Studio did not retain the appended baked track: {path}")
         for stored, record in zip(actual, ordered):
             interpolation = getattr(stored.interpolation, "value", stored.interpolation)
             if (stored.time != record["time"] or stored.value != record["value"]
