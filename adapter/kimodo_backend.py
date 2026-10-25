@@ -60,6 +60,21 @@ def inspect_kimodo_runtime() -> dict[str, Any]:
     }
 
 
+def _segment_durations(prompt: str, total_s: float) -> str:
+    """Kimodo --duration for a prompt whose full stops start new segments.
+
+    Kimodo's CLI generates every '.'-separated sentence as its own segment of
+    --duration seconds, so a two-sentence prompt doubled the clip length. The
+    requested motion_length is the total; split it evenly across sentences.
+    """
+    count = sum(1 for text in prompt.split(".") if text.strip())
+    if count <= 1:
+        return str(float(total_s))
+    part = round(total_s / count, 3)
+    parts = [part] * (count - 1) + [round(total_s - part * (count - 1), 3)]
+    return " ".join(str(float(value)) for value in parts)
+
+
 def generate_smpl_motion(
     prompts,
     *,
@@ -83,7 +98,7 @@ def generate_smpl_motion(
         command = [
             str(status["python"]), "-m", "kimodo.scripts.generate", str(prompts[0]),
             "--model", model,
-            "--duration", str(float(motion_length)),
+            "--duration", _segment_durations(str(prompts[0]), float(motion_length)),
             "--num_samples", "1",
             "--seed", str(int(seed)),
             "--output", str(output_stem),
