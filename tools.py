@@ -4,18 +4,23 @@ from __future__ import annotations
 import asyncio
 import importlib
 from importlib import metadata
+import os
+import threading
 from typing import Any
 
 from packaging.specifiers import SpecifierSet
 
 from witwin_server.plugins.paths import default_project_dir
 from witwin_server.tools.base import Tool, ToolError, tool
+from witwin_server.utils.logging import get_logger
 
 from witwin.genesis.assets import inspect_runtime
 from witwin.genesis.motion_export import Backend, generate_motion_asset
-from .adapter.kimodo_backend import configured_backend, inspect_kimodo_runtime
+from .adapter.kimodo_backend import configured_backend, configured_backend_name, inspect_kimodo_runtime
 from .adapter.scene_animation import create_humanoid_animation
 from .adapter.trajectory_clearance import HumanoidTrajectoryBlocked
+
+logger = get_logger("Genesis")
 
 
 _HUMANOID_ANIMATION_RETRIEVAL_TAGS = (
@@ -287,7 +292,7 @@ def _run_generate_animation(ctx: Any, args: dict[str, Any], backend: Backend | N
 
 
 def _active_backend_name() -> str:
-    return "kimodo" if configured_backend() is not None else "mdm_tiny"
+    return configured_backend_name()
 
 
 def _finalize_scene_animation(server: Any, scene: Any, result: Any) -> dict[str, Any]:
@@ -472,3 +477,16 @@ def register(ctx: Any) -> None:
     ctx.tools.register(make_check_genesis_runtime_tool(ctx))
     ctx.tools.register(make_generate_smpl_motion_tool(ctx))
     ctx.tools.register(make_generate_humanoid_animation_tool(ctx))
+    if configured_backend_name() == "mdm_tiny_cached" and os.environ.get("WITWIN_GENESIS_PREWARM", "1") != "0":
+        # Load the model in the background so the first request is warm.
+        from .adapter.mdm_cached_backend import prewarm
+
+        threading.Thread(target=_prewarm_quietly, args=(prewarm,), daemon=True,
+                         name="genesis-mdm-prewarm").start()
+
+
+def _prewarm_quietly(prewarm: Any) -> None:
+    try:
+        prewarm()
+    except Exception as exc:  # noqa: BLE001 - a failed warm-up leaves the cold path
+        logger.warning(f"Genesis MDM Tiny warm-up failed: {exc}")

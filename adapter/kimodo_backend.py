@@ -14,14 +14,25 @@ from .kimodo_motion import load_kimodo_motion
 DEFAULT_MODEL = "Kimodo-SOMA-RP-v1.1"
 
 
-def configured_backend():
-    """Return the configured optional backend, preserving MDM Tiny by default."""
+def configured_backend_name() -> str:
+    """Canonical name of the configured generator: mdm_tiny, mdm_tiny_cached or kimodo."""
     name = os.environ.get("WITWIN_GENESIS_BACKEND", "mdm_tiny").strip().lower()
     if name in {"", "mdm", "mdm_tiny", "genesis"}:
-        return None
-    if name == "kimodo":
-        return generate_smpl_motion
+        return "mdm_tiny"
+    if name in {"mdm_tiny_cached", "kimodo"}:
+        return name
     raise ValueError(f"unsupported WITWIN_GENESIS_BACKEND: {name}")
+
+
+def configured_backend():
+    """Return the configured optional backend, preserving MDM Tiny by default."""
+    name = configured_backend_name()
+    if name == "mdm_tiny":
+        return None
+    if name == "mdm_tiny_cached":
+        from .mdm_cached_backend import generate_smpl_motion as generate_cached
+        return generate_cached
+    return generate_smpl_motion
 
 
 def inspect_kimodo_runtime() -> dict[str, Any]:
