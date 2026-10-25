@@ -24,6 +24,20 @@ from .baked_playback import (
 )
 from .trajectory_clearance import HumanoidTrajectoryBlocked, validate_humanoid_trajectory
 
+# Generated asset names are part of a Project path; a full natural-language
+# prompt as the file stem can exceed the Windows 260-character path limit.
+_MOTION_ASSET_STEM_PREFIX = 48
+
+
+def _motion_asset_stem(prompt: str) -> str:
+    """Readable prompt prefix plus a prompt hash: short, stable and distinct."""
+    import hashlib
+    import re
+
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", prompt).strip("_").lower()[:_MOTION_ASSET_STEM_PREFIX].strip("_")
+    digest = hashlib.sha1(prompt.strip().encode("utf-8")).hexdigest()[:10]
+    return f"{slug or 'smpl_motion'}_{digest}"
+
 
 @dataclass(frozen=True)
 class SceneAnimationResult:
@@ -125,7 +139,7 @@ def create_humanoid_animation(
             device=device,
             guidance_param=guidance_param,
             smplify_iters=smplify_iters,
-            output_name=output_name,
+            output_name=output_name or _motion_asset_stem(str(prompt)),
             backend=backend,
         )
     if actor_reused:
