@@ -105,8 +105,11 @@ def generate_smpl_motion(
     model = str(status["model"])
     with tempfile.TemporaryDirectory(prefix="witwin-kimodo-") as work:
         output_stem = Path(work) / "motion"
+        text_cache = None if "smplx" in model.lower() else _text_cache_dir()
+        entry = (["-m", "kimodo.scripts.generate"] if text_cache is None
+                 else [str(Path(__file__).with_name("kimodo_cached_generate.py"))])
         command = [
-            str(status["python"]), "-m", "kimodo.scripts.generate", str(prompts[0]),
+            str(status["python"]), *entry, str(prompts[0]),
             "--model", model,
             "--duration", _segment_durations(str(prompts[0]), float(motion_length)),
             "--num_samples", "1",
@@ -117,6 +120,8 @@ def generate_smpl_motion(
             constraint_path = Path(work) / "constraints.json"
             constraint_path.write_text(json.dumps(constraints), encoding="utf-8")
             command += ["--constraints", str(constraint_path)]
+        if text_cache is not None:
+            command += ["--text-cache", str(text_cache)]
         env = os.environ.copy()
         env.setdefault("TEXT_ENCODER_DEVICE", "cpu")
         env["PYTHONPATH"] = os.pathsep.join(
@@ -136,6 +141,17 @@ def generate_smpl_motion(
         if not generated.is_file():
             raise RuntimeError(f"Kimodo completed without producing expected output: {generated.name}")
         return load_kimodo_motion(generated, target_fps=20.0)
+
+
+def _text_cache_dir() -> Path | None:
+    """Where prompt embeddings are cached (``WITWIN_KIMODO_TEXT_CACHE``; ``off``
+    runs Kimodo's own CLI, which loads its text encoder for every clip)."""
+    configured = os.environ.get("WITWIN_KIMODO_TEXT_CACHE", "").strip()
+    if configured.lower() in {"off", "0", "false", "none"}:
+        return None
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home() / ".cache" / "witwin" / "kimodo_text_embeddings"
 
 
 def _kimodo_root() -> Path:

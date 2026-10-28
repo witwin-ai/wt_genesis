@@ -36,7 +36,7 @@ def test_kimodo_backend_runs_isolated_cli_and_returns_genesis_contract(tmp_path,
     )
 
     assert result["smpl_pose"].shape == (1, 2, 24, 3)
-    assert captured["command"][1:3] == ["-m", "kimodo.scripts.generate"]
+    assert captured["command"][1].endswith("kimodo_cached_generate.py")
     assert "Kimodo-SOMA-RP-v1.1" in captured["command"]
     assert captured["kwargs"]["env"]["TEXT_ENCODER_DEVICE"] == "cpu"
 
