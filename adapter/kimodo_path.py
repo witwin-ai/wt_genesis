@@ -380,8 +380,18 @@ def _single_sentence(prompt: str) -> str:
     return "; ".join(parts) + "."
 
 
+_FLOOR_LABELS = ("floor", "rug", "carpet")
+
+
 class _SeatSupport:
-    """Wrap a body validator so contact with the named seat counts as support."""
+    """Wrap a body validator so contact with the named seat counts as support.
+
+    Kimodo bodies start sunk into the floor (its hip position is used as the
+    SMPL root) until the floor-only lift raises them. While the floor is still
+    penetrated, seat depth says nothing about the seated pose, so seat
+    contacts are left out and the lift can run; once the body stands on the
+    floor, only contact up to ``max_penetration`` counts as support.
+    """
 
     def __init__(self, validator, seat_ids, max_penetration):
         self.validator = validator
@@ -389,10 +399,15 @@ class _SeatSupport:
         self.max_penetration = float(max_penetration)
         self.exempted = 0
 
-    def _is_seat(self, contact) -> bool:
+    def _is_seat(self, contact, *, sunk: bool) -> bool:
         ids = {str(contact.get("obstacle_id") or ""), str(contact.get("obstacle") or "")}
         penetration = float(contact.get("penetration_m") or 0.0)
-        return bool(ids & self.seat_ids) and penetration <= self.max_penetration
+        return bool(ids & self.seat_ids) and (sunk or penetration <= self.max_penetration)
+
+    @staticmethod
+    def _on_floor(contact) -> bool:
+        label = f"{contact.get('obstacle_id', '')} {contact.get('obstacle', '')}".lower()
+        return any(name in label for name in _FLOOR_LABELS)
 
     def validate(self, scene, object_id, start, end):
         report = self.validator(scene, object_id, start, end)
@@ -400,11 +415,13 @@ class _SeatSupport:
             return report
         report = dict(report)
         exempted = 0
+        sunk = any(self._on_floor(contact)
+                   for key in ("overlap_summary", "contacts") for contact in report.get(key) or ())
         for key in ("overlap_summary", "contacts"):
             contacts = report.get(key)
             if not contacts:
                 continue
-            kept = [contact for contact in contacts if not self._is_seat(contact)]
+            kept = [contact for contact in contacts if not self._is_seat(contact, sunk=sunk)]
             exempted = max(exempted, len(contacts) - len(kept))
             report[key] = kept
         self.exempted = exempted

@@ -183,7 +183,9 @@ def _route_following_generator(calls, *, start=(0.0, 0.92, 0.0), wobble=0.0):
             for index, point in zip(item["frame_indices"], item["smooth_root_2d"]):
                 points[index] = point
         count = max(points) + 1
-        source = np.array([points[index] for index in range(count)], dtype=np.float64)
+        known = sorted(points)
+        source = np.array([[np.interp(index, known, [points[k][axis] for k in known])
+                            for axis in (0, 1)] for index in range(count)], dtype=np.float64)
         times = np.arange(count) / 30.0
         out_times = np.arange(0.0, times[-1] + 1e-9, 1.0 / 20.0)
         xz = np.column_stack([np.interp(out_times, times, source[:, axis]) for axis in (0, 1)])
@@ -311,4 +313,51 @@ def test_seat_contact_is_support_only_for_the_named_seat(tmp_path, monkeypatch):
             scene=_scene_with_tiny_skin(monkeypatch), project_dir=tmp_path,
             prompt="a person walks to the chair and sits down", waypoints=ROUTE,
             sit_support_ids=["chair_1"], body_validator=seated("table_2"),
+            generator=_route_following_generator([]))
+
+
+def _contact(obstacle, depth, time=4.0):
+    return {"time": time, "body_part": "pelvis", "obstacle_id": obstacle, "obstacle": obstacle,
+            "kind": "conservative_convex_overlap", "penetration_m": depth}
+
+
+def test_seat_depth_is_judged_after_the_body_is_lifted_onto_the_floor(tmp_path, monkeypatch):
+    # bench_3007: Kimodo bodies start ~0.13 m sunk (SOMA hips used as the SMPL
+    # root). The floor lift only runs when the floor is the sole blocker, and
+    # the sunk sitting body also overlapped the bed by 0.15-0.2 m: every sit
+    # was refused before it was lifted to where it actually sits.
+    from wt_genesis.adapter.kimodo_path import create_humanoid_path_animation
+
+    reports = [
+        {"status": "overlap_detected", "samples": 10, "affected_samples": 4,
+         "contacts": [_contact("floor", .13, 0.2), _contact("bed_1", .2)]},
+        {"status": "overlap_detected", "samples": 10, "affected_samples": 1,
+         "contacts": [_contact("bed_1", .05)]},
+    ]
+    result = create_humanoid_path_animation(
+        scene=_scene_with_tiny_skin(monkeypatch), project_dir=tmp_path,
+        prompt="a person walks over and sits down", waypoints=ROUTE, sit_at=(3.0, 3.9),
+        end_heading=0.0, sit_support_ids=["bed_1"], body_validator=lambda *_a: reports.pop(0),
+        generator=_route_following_generator([]))
+
+    clearance = result.animation.trajectory_clearance
+    assert clearance["floor_support_correction"]["total_lift_m"] == pytest.approx(.131)
+    assert clearance["seat_support_contacts"] == 1
+
+
+def test_a_seat_still_too_deep_after_the_lift_is_refused(tmp_path, monkeypatch):
+    from wt_genesis.adapter.kimodo_path import create_humanoid_path_animation
+    from wt_genesis.adapter.trajectory_clearance import HumanoidTrajectoryBlocked
+
+    reports = [
+        {"status": "overlap_detected", "samples": 10, "affected_samples": 4,
+         "contacts": [_contact("floor", .13, 0.2), _contact("bed_1", .3)]},
+        {"status": "overlap_detected", "samples": 10, "affected_samples": 1,
+         "contacts": [_contact("bed_1", .17)]},
+    ]
+    with pytest.raises(HumanoidTrajectoryBlocked):
+        create_humanoid_path_animation(
+            scene=_scene_with_tiny_skin(monkeypatch), project_dir=tmp_path,
+            prompt="a person walks over and sits down", waypoints=ROUTE, sit_at=(3.0, 3.9),
+            end_heading=0.0, sit_support_ids=["bed_1"], body_validator=lambda *_a: reports.pop(0),
             generator=_route_following_generator([]))
