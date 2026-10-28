@@ -71,11 +71,30 @@ class CachedTextEncoder:
         return torch.from_numpy(padded), lengths
 
 
-def _llm2vec_factory():
-    from kimodo.model.load_model import _build_local_text_encoder_conf
-    from kimodo.model import instantiate_from_dict
+def kimodo_imports():
+    """Everything used from Kimodo, imported in one place (checked by a test
+    in the real runtime: fakes cannot tell a wrong module path)."""
+    from types import SimpleNamespace
 
-    return instantiate_from_dict(_build_local_text_encoder_conf())
+    import torch
+    from kimodo import load_model
+    from kimodo.constraints import load_constraints_lst
+    from kimodo.exports.motion_io import save_kimodo_npz
+    from kimodo.model.load_model import _build_local_text_encoder_conf
+    from kimodo.model.loading import instantiate_from_dict
+    from kimodo.scripts.generate import get_texts_and_num_frames_from_prompt
+    from kimodo.tools import seed_everything
+
+    return SimpleNamespace(
+        torch=torch, load_model=load_model, load_constraints_lst=load_constraints_lst,
+        save_kimodo_npz=save_kimodo_npz, local_text_encoder_conf=_build_local_text_encoder_conf,
+        instantiate_from_dict=instantiate_from_dict,
+        texts_and_frames=get_texts_and_num_frames_from_prompt, seed_everything=seed_everything)
+
+
+def _llm2vec_factory():
+    kimodo = kimodo_imports()
+    return kimodo.instantiate_from_dict(kimodo.local_text_encoder_conf())
 
 
 def parse_args(argv=None):
@@ -94,24 +113,18 @@ def parse_args(argv=None):
 
 
 def main(argv=None) -> int:
-    import torch
-    from kimodo import load_model
-    from kimodo.constraints import load_constraints_lst
-    from kimodo.exports.motion_io import save_kimodo_npz
-    from kimodo.scripts.generate import get_texts_and_num_frames_from_prompt
-    from kimodo.tools import seed_everything
-
+    kimodo = kimodo_imports()
     args = parse_args(argv)
     if args.num_samples != 1:
         raise SystemExit("the cached runner generates exactly one sample")
-    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    device = "cuda:0" if kimodo.torch.cuda.is_available() else "cpu"
     encoder = CachedTextEncoder(args.text_cache, factory=_llm2vec_factory)
-    model, resolved = load_model(args.model, device=device, default_family="Kimodo",
+    model, resolved = kimodo.load_model(args.model, device=device, default_family="Kimodo",
                                  return_resolved_name=True, text_encoder=encoder)
-    texts, num_frames = get_texts_and_num_frames_from_prompt(args.prompt, args.duration, model.fps)
-    constraints = load_constraints_lst(args.constraints, model.skeleton) if args.constraints else []
+    texts, num_frames = kimodo.texts_and_frames(args.prompt, args.duration, model.fps)
+    constraints = kimodo.load_constraints_lst(args.constraints, model.skeleton) if args.constraints else []
     if args.seed is not None:
-        seed_everything(args.seed)
+        kimodo.seed_everything(args.seed)
     output = model(
         texts, num_frames, constraint_lst=constraints,
         num_denoising_steps=args.diffusion_steps, num_samples=1, multi_prompt=True,
@@ -122,7 +135,7 @@ def main(argv=None) -> int:
                     and value.shape[0] == 1 else value)
               for key, value in output.items()}
     path = args.output if args.output.endswith(".npz") else args.output + ".npz"
-    save_kimodo_npz(path, single)
+    kimodo.save_kimodo_npz(path, single)
     print(f"Saved {path}; text encoder loaded: {encoder.encoder is not None}")
     return 0
 

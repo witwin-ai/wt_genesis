@@ -150,3 +150,24 @@ def test_the_import_probe_allows_a_loaded_machine(monkeypatch, tmp_path):
     backend._probe_runtime(tmp_path / "python.exe", tmp_path)
 
     assert seen["timeout"] >= 120
+
+
+def test_the_runner_imports_resolve_in_the_kimodo_runtime():
+    # The first real run failed: instantiate_from_dict is not exported by
+    # kimodo.model (it lives in kimodo.model.loading). Fakes cannot see that.
+    import os
+    import subprocess
+    from pathlib import Path
+
+    import wt_genesis.adapter.kimodo_backend as backend
+
+    python, root = backend._kimodo_python(), backend._kimodo_root()
+    if not python.is_file() or not (root / "kimodo").is_dir() or "witwin-kimodo" not in str(python):
+        pytest.skip("isolated Kimodo runtime not configured")
+    adapter = Path(backend.__file__).parent
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(root), str(adapter)]))
+    result = subprocess.run(
+        [str(python), "-c", "import kimodo_cached_generate as m; m.kimodo_imports()"],
+        capture_output=True, text=True, env=env, timeout=300)
+
+    assert result.returncode == 0, result.stderr[-2000:]
