@@ -13,6 +13,9 @@ from .kimodo_motion import load_kimodo_motion
 
 
 DEFAULT_MODEL = "Kimodo-SOMA-RP-v1.1"
+#: (python, source root) pairs whose import probe already succeeded in this
+#: process; a batch probes once, not before every clip.
+_READY_RUNTIMES: set[tuple[str, str]] = set()
 
 
 def configured_backend():
@@ -38,11 +41,20 @@ def inspect_kimodo_runtime() -> dict[str, Any]:
         issues.append(f"Kimodo Python executable does not exist: {python}")
     if not (root / "kimodo" / "scripts" / "generate.py").is_file():
         issues.append(f"Kimodo source checkout is missing: {root}")
-    import_probe = _probe_runtime(python, root) if python.is_file() else {
-        "importable": False,
-        "cuda_available": False,
-        "detail": "Python executable is missing",
-    }
+    key = (str(python), str(root))
+    if key in _READY_RUNTIMES and python.is_file():
+        import_probe = {"importable": True, "cuda_available": True,
+                        "detail": "ok (probed earlier in this process)"}
+    elif python.is_file():
+        import_probe = _probe_runtime(python, root)
+        if import_probe["importable"] and import_probe["cuda_available"]:
+            _READY_RUNTIMES.add(key)
+    else:
+        import_probe = {
+            "importable": False,
+            "cuda_available": False,
+            "detail": "Python executable is missing",
+        }
     if not import_probe["importable"]:
         issues.append(f"Kimodo cannot import in its isolated runtime: {import_probe['detail']}")
     elif not import_probe["cuda_available"]:
@@ -181,7 +193,8 @@ def _probe_runtime(python: Path, root: Path) -> dict[str, Any]:
             capture_output=True,
             text=True,
             env=env,
-            timeout=30,
+            # Importing torch takes ~10 s, and minutes on a loaded machine.
+            timeout=120,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return {"importable": False, "cuda_available": False, "detail": str(exc)}

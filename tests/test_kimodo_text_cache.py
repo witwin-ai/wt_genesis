@@ -118,3 +118,35 @@ def test_runner_arguments_match_the_kimodo_cli(tmp_path):
 
     assert args.prompt == "a person walks" and args.duration == "4.5" and args.seed == 7
     assert args.text_cache == str(tmp_path)
+
+
+def test_a_ready_runtime_is_probed_once_per_process(tmp_path, monkeypatch):
+    # R47 person trial: the import probe (import kimodo, torch) ran before every
+    # clip and hit its 30 s timeout under memory pressure, failing a sample.
+    import wt_genesis.adapter.kimodo_backend as backend
+
+    backend, _commands = _fake_runtime(tmp_path, monkeypatch)
+    monkeypatch.setattr(backend, "_READY_RUNTIMES", set(), raising=False)
+    probes = []
+    monkeypatch.setattr(backend, "_probe_runtime", lambda python, root: probes.append(1) or {
+        "importable": True, "cuda_available": True, "detail": "ok"})
+
+    for _ in range(3):
+        backend.generate_smpl_motion(["a person waves"], motion_length=2.0, seed=3)
+
+    assert len(probes) == 1
+
+
+def test_the_import_probe_allows_a_loaded_machine(monkeypatch, tmp_path):
+    import wt_genesis.adapter.kimodo_backend as backend
+
+    seen = {}
+
+    def run(command, **kwargs):
+        seen.update(kwargs)
+        return type("R", (), {"stdout": "1\n"})()
+
+    monkeypatch.setattr(backend.subprocess, "run", run)
+    backend._probe_runtime(tmp_path / "python.exe", tmp_path)
+
+    assert seen["timeout"] >= 120
