@@ -361,3 +361,16 @@ def test_a_seat_still_too_deep_after_the_lift_is_refused(tmp_path, monkeypatch):
             prompt="a person walks over and sits down", waypoints=ROUTE, sit_at=(3.0, 3.9),
             end_heading=0.0, sit_support_ids=["bed_1"], body_validator=lambda *_a: reports.pop(0),
             generator=_route_following_generator([]))
+
+
+def test_path_following_reports_the_fastest_root_step(tmp_path, monkeypatch):
+    # bench_7007: the last 1.5 s of 13 s Kimodo clips jumped 0.3-0.5 m per
+    # frame (up to 11 m/s) although the mean error stayed 4 cm.
+    from wt_genesis.adapter.kimodo_path import create_humanoid_path_animation
+
+    scene = _scene_with_tiny_skin(monkeypatch)
+    result = create_humanoid_path_animation(
+        scene=scene, project_dir=tmp_path, prompt="a person walks", waypoints=ROUTE,
+        speed_mps=1.0, generator=_route_following_generator([]))
+
+    assert 0.9 <= result.path_following["max_root_speed_mps"] <= 1.1

@@ -448,10 +448,16 @@ def path_following_error(scene: Any, body_object_id: str, plan: RootPathPlan, *,
     to the route polyline whenever it is reached. Both cover the walk and,
     unless sitting (left to the model), the end hold; ``end_error_m`` is the
     last key against the final point (the seat when sitting).
+    ``max_root_speed_mps`` is the fastest root step of the whole clip.
     """
     times, values = _root_keys(scene, body_object_id)
     all_xz = values[:, [0, 2]]
     end = float(np.linalg.norm(all_xz[-1] - np.asarray(plan.final_xz)))
+    # A glitching clip jumps the root (13 s Kimodo clips: 0.5 m per frame).
+    spans = np.diff(times)
+    steps = np.linalg.norm(np.diff(all_xz, axis=0), axis=1)
+    moving = spans > 1e-9
+    fastest = float((steps[moving] / spans[moving]).max()) if moving.any() else 0.0
     if plan.sit_at is not None:
         walking = times - start_time <= plan.arrival_s + 1e-6
         times, values = times[walking], values[walking]
@@ -468,6 +474,7 @@ def path_following_error(scene: Any, body_object_id: str, plan: RootPathPlan, *,
         "end_error_m": round(end, 4),
         "walked_m": round(float(np.linalg.norm(np.diff(xz, axis=0), axis=1).sum()), 4),
         "planned_m": round(plan.length_m, 4),
+        "max_root_speed_mps": round(fastest, 3),
     }
 
 
