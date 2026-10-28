@@ -56,6 +56,7 @@ class RootPathPlan:
     start_heading_frames: int = 0
     end_heading_frames: int = 0
     loose_end_frames: int = 0
+    sit_at: tuple[float, float] | None = None
     _knot_xz: np.ndarray = field(default=None, repr=False)
 
     @property
@@ -69,6 +70,13 @@ class RootPathPlan:
     @property
     def duration_s(self) -> float:
         return (self.frame_count - 1) / self.fps
+
+    @property
+    def final_xz(self) -> tuple[float, float]:
+        """Where the root ends: the seat when sitting, else the last waypoint."""
+        if self.sit_at is not None:
+            return self.sit_at
+        return float(self.waypoints[-1, 0]), float(self.waypoints[-1, 1])
 
     @property
     def kimodo_duration_s(self) -> float:
@@ -89,8 +97,8 @@ class RootPathPlan:
         """Kimodo ``root2d`` constraint sets, relative to the route start.
 
         Every frame is constrained once: the start and end heading frames in
-        sets of their own, the rest as a plain path. Frames inside a loose
-        end (room for sitting down) are left to the model, except the last.
+        sets of their own, the rest as a plain path. When sitting, the end
+        hold is left to the model (turn and sit) except its last frame.
         """
         count = self.frame_count
         relative = self.frames_xz - np.asarray(self.origin).reshape(1, 2)
@@ -126,7 +134,7 @@ class RootPathPlan:
             "fps": self.fps,
             "start_heading": self.start_heading,
             "end_heading": self.end_heading,
-            "loose_end_s": round(self.loose_end_frames / self.fps, 4),
+            "sit_at": None if self.sit_at is None else list(self.sit_at),
         }
 
 
@@ -140,7 +148,7 @@ def plan_root_path(
     ease_s: float = 0.4,
     start_heading: float | str | None = "auto",
     end_heading: float | None = None,
-    loose_end_s: float = 0.0,
+    sit_at: Sequence[float] | None = None,
     max_duration_s: float = 20.0,
     fps: float = KIMODO_FPS,
 ) -> RootPathPlan:
@@ -151,14 +159,16 @@ def plan_root_path(
     acceleration at each end, after ``start_hold_s`` standing. With them,
     each waypoint is reached at its time (a repeated waypoint is a pause).
     ``start_heading="auto"`` faces the first leg while standing.
+    ``sit_at`` (x, z) is a seat the root ends over after the walk: the end
+    hold is left free for Kimodo to turn and sit, only its last frame is
+    pinned there (with ``end_heading``, facing away from the seat).
     """
     points = _ground_points(waypoints)
     legs = np.linalg.norm(np.diff(points, axis=0), axis=1)
     if not legs.sum() > 1e-6:
         raise ValueError("a route must move: its waypoints are all the same point")
     for name, value in (("speed_mps", speed_mps), ("start_hold_s", start_hold_s),
-                        ("end_hold_s", end_hold_s), ("ease_s", ease_s),
-                        ("loose_end_s", loose_end_s)):
+                        ("end_hold_s", end_hold_s), ("ease_s", ease_s)):
         if not math.isfinite(float(value)) or float(value) < 0.0:
             raise ValueError(f"{name} must be finite and non-negative")
     if waypoint_times is None:
@@ -184,6 +194,13 @@ def plan_root_path(
     if speeds.size and speeds.max() > MAX_LEG_SPEED_MPS:
         raise ValueError(f"a leg asks for {speeds.max():.2f} m/s, above {MAX_LEG_SPEED_MPS} m/s")
     duration = arrival + float(end_hold_s)
+    seat = None
+    if sit_at is not None:
+        seat = tuple(_ground_points([knot_xz[-1], sit_at])[1])
+        if not float(end_hold_s) > 0.0:
+            raise ValueError("sitting needs an end hold to turn and sit in")
+        knot_times = np.concatenate([knot_times, [duration]])
+        knot_xz = np.concatenate([knot_xz, [seat]])
     if duration > float(max_duration_s) + 1e-9:
         raise ValueError(f"route takes {duration:.2f} s, above max_duration_s={max_duration_s}")
     count = int(round(duration * fps)) + 1
@@ -199,8 +216,9 @@ def plan_root_path(
     end_frames = 0
     if end_heading is not None:
         end_frames = max(1, min(int(round(END_HEADING_S * fps)), int(round(end_hold_s * fps))))
-    loose = min(int(round(float(loose_end_s) * fps)), count - 1)
-    if loose:
+    loose = 0
+    if seat is not None:
+        loose = max(0, count - 2 - int(round(arrival * fps)))
         end_frames = 1 if end_heading is not None else 0
     return RootPathPlan(
         waypoints=points, knot_times=knot_times, frames_xz=frames, fps=float(fps),
@@ -208,7 +226,7 @@ def plan_root_path(
         start_heading=None if start_heading is None else float(start_heading),
         end_heading=None if end_heading is None else float(end_heading),
         start_heading_frames=start_frames, end_heading_frames=end_frames,
-        loose_end_frames=loose, _knot_xz=knot_xz,
+        loose_end_frames=loose, sit_at=seat, _knot_xz=knot_xz,
     )
 
 
@@ -286,7 +304,7 @@ def create_humanoid_path_animation(
     ease_s: float = 0.4,
     start_heading: float | str | None = "auto",
     end_heading: float | None = None,
-    loose_end_s: float = 0.0,
+    sit_at: Sequence[float] | None = None,
     sit_support_ids: Sequence[str] = (),
     max_seat_penetration_m: float = 0.10,
     max_duration_s: float = 20.0,
@@ -308,12 +326,12 @@ def create_humanoid_path_animation(
     so its root starts on the first waypoint at ``floor_y`` (the first
     waypoint's y when it has one). ``sit_support_ids`` names a seat whose
     contact with the body (up to ``max_seat_penetration_m``) is support, not
-    collision; pair it with ``loose_end_s`` so the model can turn and sit.
+    collision; pair it with ``sit_at`` so the model can turn and sit there.
     """
     plan = plan_root_path(
         waypoints, speed_mps=speed_mps, waypoint_times=waypoint_times,
         start_hold_s=start_hold_s, end_hold_s=end_hold_s, ease_s=ease_s,
-        start_heading=start_heading, end_heading=end_heading, loose_end_s=loose_end_s,
+        start_heading=start_heading, end_heading=end_heading, sit_at=sit_at,
         max_duration_s=max_duration_s,
     )
     if floor_y is None:
@@ -410,14 +428,20 @@ def path_following_error(scene: Any, body_object_id: str, plan: RootPathPlan, *,
 
     ``timed`` compares each key with where the plan says the human should be
     at that time (what a joint script relies on); ``route`` is the distance
-    to the route polyline whenever it is reached.
+    to the route polyline whenever it is reached. Both cover the walk and,
+    unless sitting (left to the model), the end hold; ``end_error_m`` is the
+    last key against the final point (the seat when sitting).
     """
     times, values = _root_keys(scene, body_object_id)
+    all_xz = values[:, [0, 2]]
+    end = float(np.linalg.norm(all_xz[-1] - np.asarray(plan.final_xz)))
+    if plan.sit_at is not None:
+        walking = times - start_time <= plan.arrival_s + 1e-6
+        times, values = times[walking], values[walking]
     xz = values[:, [0, 2]]
     planned = np.asarray([plan.position_at(time - start_time) for time in times])
     timed = np.linalg.norm(xz - planned, axis=1)
     route = np.asarray([_distance_to_polyline(point, plan.waypoints) for point in xz])
-    end = float(np.linalg.norm(xz[-1] - plan.waypoints[-1]))
     return {
         "samples": int(len(times)),
         "timed_mean_error_m": round(float(timed.mean()), 4),

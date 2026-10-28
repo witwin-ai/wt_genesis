@@ -89,6 +89,31 @@ def test_end_heading_is_a_kimodo_heading_constraint_on_the_final_frames():
     assert len(indices) == len(set(indices))
 
 
+def test_sitting_leaves_the_turn_and_sit_to_kimodo_and_pins_the_seat():
+    """The walk ends in front of the seat; Kimodo turns and sits on its own.
+
+    Only the last frame is pinned: the root over the seat, facing away from
+    it. Pinning the frames between would drag a standing body into the seat.
+    """
+    from wt_genesis.adapter.kimodo_path import plan_root_path
+
+    plan = plan_root_path([(0.0, 0.0), (2.0, 0.0)], speed_mps=1.0, end_hold_s=3.0,
+                          sit_at=(2.0, -0.6), end_heading=math.pi)
+    constraints = plan.kimodo_constraints()
+    pinned = {index for item in constraints for index in item["frame_indices"]}
+    arrival = int(round(plan.arrival_s * plan.fps))
+
+    assert plan.sit_at == pytest.approx((2.0, -0.6))
+    assert set(range(arrival + 1)) <= pinned
+    assert not pinned & set(range(arrival + 1, plan.frame_count - 1))
+    last = next(item for item in constraints
+                if item["frame_indices"] == [plan.frame_count - 1])
+    assert last["smooth_root_2d"] == [pytest.approx([2.0, -0.6])]
+    assert last["global_root_heading"] == [pytest.approx([-1.0, 0.0], abs=1e-6)]
+    assert plan.position_at(plan.duration_s) == pytest.approx((2.0, -0.6))
+    assert plan.final_xz == pytest.approx((2.0, -0.6))
+
+
 def test_plan_rejects_routes_it_cannot_walk():
     from wt_genesis.adapter.kimodo_path import plan_root_path
 
