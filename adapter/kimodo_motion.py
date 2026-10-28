@@ -1,7 +1,9 @@
 """Convert Kimodo motion files to the canonical WT Genesis SMPL arrays."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Sequence
 
 import numpy as np
 from scipy.spatial.transform import Rotation, Slerp
@@ -55,6 +57,61 @@ def load_kimodo_motion(path: str | Path, *, target_fps: float = 20.0) -> dict[st
         "smpl_betas": np.zeros((1, frames, 10), dtype=np.float32),
         "smpl_trans": trans.reshape(1, frames, 3),
     }
+
+
+#: Share of frames whose lowest foot may still be below the floor after
+#: grounding (glitch frames, a foot sliding through the floor).
+GROUNDING_PERCENTILE = 5.0
+
+
+@dataclass(frozen=True)
+class SMPLRestSkeleton:
+    """What grounding needs from the SMPL body: rest joints (body frame,
+    root translation at 0), parents, the foot joints and how far the sole is
+    below the lowest of them."""
+
+    joints: np.ndarray
+    parents: Sequence[int]
+    foot_joints: Sequence[int]
+    sole_below_feet_m: float
+
+
+def ground_smpl_motion(motion: dict, skeleton: SMPLRestSkeleton) -> tuple[dict, float]:
+    """Raise or lower a whole SMPL clip by one constant so its soles touch y=0.
+
+    Kimodo's SOMA hip height is used as the SMPL root translation, so the
+    SMPL ankles start ~0.13 m below the floor. One offset for the clip (not
+    per frame) keeps sitting, crouching and jumping as generated; the floor
+    is where the lowest foot is in all but ``GROUNDING_PERCENTILE`` % of frames.
+    """
+    pose = np.asarray(motion["smpl_pose"], dtype=np.float64)
+    trans = np.asarray(motion["smpl_trans"], dtype=np.float64)
+    frames = pose.shape[1]
+    pose = pose.reshape(frames, -1, 3)
+    trans = trans.reshape(frames, 3)
+    joints = np.asarray(skeleton.joints, dtype=np.float64)
+    count = joints.shape[0]
+    rotations = Rotation.from_rotvec(pose[:, :count].reshape(-1, 3)).as_matrix()
+    rotations = rotations.reshape(frames, count, 3, 3)
+    world_rot = [None] * count
+    world_pos = [None] * count
+    for joint in range(count):
+        parent = skeleton.parents[joint]
+        if parent < 0:
+            world_rot[joint] = rotations[:, joint]
+            world_pos[joint] = trans + joints[joint]
+        else:
+            offset = joints[joint] - joints[parent]
+            world_rot[joint] = world_rot[parent] @ rotations[:, joint]
+            world_pos[joint] = world_pos[parent] + world_rot[parent] @ offset
+    lowest = np.min([world_pos[joint][:, 1] for joint in skeleton.foot_joints], axis=0)
+    floor = float(np.percentile(lowest, GROUNDING_PERCENTILE))
+    lift = float(skeleton.sole_below_feet_m) - floor
+    grounded = dict(motion)
+    shifted = np.array(motion["smpl_trans"], dtype=np.float32, copy=True)
+    shifted[..., 1] += np.float32(lift)
+    grounded["smpl_trans"] = shifted
+    return grounded, lift
 
 
 def _from_amass(data) -> tuple[np.ndarray, np.ndarray, float]:

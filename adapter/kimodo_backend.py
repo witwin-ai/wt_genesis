@@ -9,7 +9,9 @@ import sys
 import tempfile
 from typing import Any
 
-from .kimodo_motion import load_kimodo_motion
+import numpy as np
+
+from .kimodo_motion import SMPLRestSkeleton, ground_smpl_motion, load_kimodo_motion
 
 
 DEFAULT_MODEL = "Kimodo-SOMA-RP-v1.1"
@@ -152,7 +154,35 @@ def generate_smpl_motion(
         )
         if not generated.is_file():
             raise RuntimeError(f"Kimodo completed without producing expected output: {generated.name}")
-        return load_kimodo_motion(generated, target_fps=20.0)
+        motion = load_kimodo_motion(generated, target_fps=20.0)
+    skeleton = smpl_rest_skeleton()
+    if skeleton is not None:
+        motion, lift = ground_smpl_motion(motion, skeleton)
+        motion["grounding_lift_m"] = lift
+    return motion
+
+
+#: SMPL joints of the ankles and feet (toes).
+SMPL_FOOT_JOINTS = (7, 8, 10, 11)
+
+
+def smpl_rest_skeleton() -> SMPLRestSkeleton | None:
+    """The neutral SMPL rest skeleton Genesis bodies use (zero betas, as
+    Kimodo clips have), or None when the licensed model files are missing."""
+    try:
+        from witwin.genesis.mdm_tiny_runtime import DEFAULT_MODEL_ROOT
+        from wt_humanoid.adapter.smpl_skinned import build_smpl_skin_asset
+
+        root = os.environ.get("WITWIN_SMPL_MODEL_ROOT") or str(DEFAULT_MODEL_ROOT)
+        asset = build_smpl_skin_asset(root, gender="neutral", betas=[0.0] * 10)
+    except Exception:  # noqa: BLE001 - grounding is skipped, not the clip
+        return None
+    joints = np.asarray(asset.joint_positions, dtype=np.float64)
+    vertices = np.asarray(asset.vertices, dtype=np.float64)
+    feet = float(joints[list(SMPL_FOOT_JOINTS), 1].min())
+    return SMPLRestSkeleton(joints=joints, parents=list(asset.parent_indices),
+                            foot_joints=SMPL_FOOT_JOINTS,
+                            sole_below_feet_m=feet - float(vertices[:, 1].min()))
 
 
 def _text_cache_dir() -> Path | None:
