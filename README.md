@@ -35,6 +35,25 @@ with spherical interpolation. It is an integration retarget, not a claim of
 motion-quality equivalence; quality must be judged from a generated Studio
 timeline and compared against the same prompt/seed on the original backend.
 
+### Walking a planned route (Python API)
+
+Text alone does not say where a generated human goes. With Kimodo,
+`adapter.kimodo_path.create_humanoid_path_animation(scene=..., project_dir=...,
+prompt=..., waypoints=[(x, z) or (x, y, z), ...])` passes a route planned in
+scene coordinates to Kimodo as root-path constraints (relative to its start),
+places the clip back on the route and binds it like the tool does. Timing is
+`speed_mps` (eased start and stop, `start_hold_s`/`end_hold_s` standing) or
+`waypoint_times` (a repeated waypoint is a pause); `end_heading` turns at the
+end (Kimodo heading: `atan2(dx, dz)`, 0 faces +Z); `sit_at=(x, z)` with
+`sit_support_ids=[seat]` leaves the end hold to the model to turn and sit and
+treats shallow seat contact as support. The prompt must be one sentence.
+
+The result carries `path_following` (timed and route error of the final root
+track against the plan) and `occupancy` (root samples over time plus a body
+radius) — `humanoid_occupancy(scene, body_id)` gives the same for any baked
+human, for planning another actor (a cat) around it. Validate with a body
+collision reader that does not relocate: moving the track leaves the route.
+
 ## Preflight and scene animation
 
 Run `witwin.genesis.check_genesis_runtime` first. Its `pipeline_ready` field is
