@@ -1,6 +1,7 @@
 """Isolated process adapter for NVIDIA Kimodo text-to-motion generation."""
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -83,11 +84,20 @@ def generate_smpl_motion(
     device: int = 0,
     guidance_param: float = 2.5,
     smplify_iters: int = 20,
+    constraints: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Run Kimodo out-of-process and adapt its motion to WT's SMPL contract."""
+    """Run Kimodo out-of-process and adapt its motion to WT's SMPL contract.
+
+    ``constraints`` is a Kimodo constraint list (``root2d`` paths, headings,
+    keyframes) as its CLI loads it from ``--constraints``.
+    """
     del guidance_param, smplify_iters
     if len(prompts) != 1 or not str(prompts[0]).strip():
         raise ValueError("Kimodo backend requires exactly one non-empty prompt")
+    if constraints and sum(1 for text in str(prompts[0]).split(".") if text.strip()) > 1:
+        # Constraint frames index one clip; Kimodo's per-sentence segments
+        # (and their transitions) would no longer line up with them.
+        raise ValueError("a constrained Kimodo prompt must be a single sentence")
     status = inspect_kimodo_runtime()
     if not status["ready"]:
         raise RuntimeError("Kimodo runtime is not ready: " + "; ".join(status["issues"]))
@@ -103,6 +113,10 @@ def generate_smpl_motion(
             "--seed", str(int(seed)),
             "--output", str(output_stem),
         ]
+        if constraints:
+            constraint_path = Path(work) / "constraints.json"
+            constraint_path.write_text(json.dumps(constraints), encoding="utf-8")
+            command += ["--constraints", str(constraint_path)]
         env = os.environ.copy()
         env.setdefault("TEXT_ENCODER_DEVICE", "cpu")
         env["PYTHONPATH"] = os.pathsep.join(
