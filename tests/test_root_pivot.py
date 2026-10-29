@@ -56,3 +56,24 @@ def test_a_lying_body_keeps_its_pelvis_where_smpl_puts_it(tmp_path, monkeypatch)
     assert upright == pytest.approx([2.0, 1.0, 3.0], abs=1e-6)
     rotated = Rotation.from_euler("x", 90, degrees=True).apply([0.0, -0.2, 0.0])
     assert lying == pytest.approx(np.array([2.0, 0.8, 3.0]) - rotated, abs=1e-5)
+
+
+def test_the_saved_body_stands_where_its_root_track_starts(tmp_path, monkeypatch):
+    """Studio shows the static transform until the timeline first applies:
+    left at the placement's y = 0 the pelvis was 1.17 m into the floor on
+    frame 0 (the user saw a sunk person)."""
+    from witwin_server.core.scene import Scene
+    import wt_genesis.adapter.scene_animation as scene_animation
+    from wt_genesis.adapter.scene_animation import create_humanoid_animation
+
+    monkeypatch.setattr(scene_animation, "build_smpl_skin_asset",
+                        lambda *args, **kwargs: _skin_with_pelvis_offset())
+    scene = Scene(scene_id="main")
+    result = create_humanoid_animation(
+        scene=scene, project_dir=tmp_path, prompt="a person lies down", motion_length=0.1,
+        device=-1, position=[2.0, 0.0, 3.0], playback_mode="baked_transforms",
+        backend=_lying_backend)
+
+    track = scene.timeline_manager.clip.get_track(result.body_object_id, "Transform", "position")
+    static = scene.get_object(result.body_object_id).get_component("Transform").position
+    assert np.asarray(static, dtype=float) == pytest.approx(np.asarray(track.keyframes[0].value), abs=1e-6)

@@ -185,6 +185,11 @@ def create_humanoid_animation(
         betas=body.shape,
     )
     _pivot_root_on_pelvis(root_motion, skin_asset.joint_positions[0])
+    if not actor_reused:
+        # The saved scene shows the static transform until the timeline
+        # first applies: at the placement's y = 0 the pelvis was 1.17 m into
+        # the floor on frame 0. Stand it where the root track starts.
+        body_obj.get_component("Transform").position = list(root_motion["positions"][0])
     trajectory_clearance = (
         validate_humanoid_trajectory(
             root_motion["positions"],
