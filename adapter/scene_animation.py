@@ -184,6 +184,7 @@ def create_humanoid_animation(
         gender=body.gender,
         betas=body.shape,
     )
+    _pivot_root_on_pelvis(root_motion, skin_asset.joint_positions[0])
     trajectory_clearance = (
         validate_humanoid_trajectory(
             root_motion["positions"],
@@ -712,7 +713,21 @@ def _build_root_motion_tracks(motion_asset: MotionExportResult, position: list[f
     rotations = _continuous_euler_values(
         Rotation.from_rotvec(root_orient).as_euler("ZXY", degrees=False).astype(float).tolist()
     )
-    return {"positions": positions, "rotations": rotations}
+    return {"positions": positions, "rotations": rotations, "root_rotvecs": root_orient}
+
+
+def _pivot_root_on_pelvis(root_motion: dict[str, Any], pelvis: Sequence[float]) -> None:
+    """Make the body object turn about the SMPL pelvis joint, as SMPL does.
+
+    SMPL rotates the root about the pelvis joint ``pelvis`` (J0, 0.22 m under
+    the root translation); the body object turns about its own origin. Upright
+    the two agree, but a body lying down hovered ~0.2 m over the floor. Moving
+    the object to ``translation + J0 - R J0`` puts the pelvis where SMPL does.
+    """
+    offset = np.asarray(pelvis, dtype=np.float64).reshape(3)
+    turned = Rotation.from_rotvec(np.asarray(root_motion["root_rotvecs"], dtype=np.float64)).apply(offset)
+    positions = np.asarray(root_motion["positions"], dtype=np.float64) + offset - turned
+    root_motion["positions"] = positions.tolist()
 
 
 def _build_skeleton_rotation_keyframes(body_obj: SceneObject, motion_asset: MotionExportResult) -> tuple[int, list[dict[str, Any]]]:
