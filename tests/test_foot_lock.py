@@ -14,25 +14,39 @@ def _skin():
     return skin
 
 
-def test_pivot_corrections_hold_the_heel_then_the_toe_and_fade_out():
-    from wt_genesis.adapter.foot_lock import pivot_corrections
+def test_pivot_corrections_hold_the_heel_the_flat_foot_and_the_toe_and_fade_out():
+    from wt_genesis.adapter.foot_lock import _turn_xz, pivot_corrections
 
     frames, fps = 30, 20.0
-    heel = np.stack([np.linspace(0.0, 0.29, frames), np.zeros(frames)], axis=1)
-    toe = heel + [0.2, 0.0]
+    # The foot slides forward (+x) and turns 0.3 rad while it stands.
+    ankle = np.stack([np.linspace(0.0, 0.29, frames), np.zeros(frames)], axis=1)
+    yaw = np.linspace(0.0, 0.3, frames)
+    heel = ankle + np.stack([_turn_xz(angle, [0.0, -0.05]) for angle in yaw])
+    toe = ankle + np.stack([_turn_xz(angle, [0.0, 0.15]) for angle in yaw])
     heel_down = np.zeros(frames, bool)
     toe_down = np.zeros(frames, bool)
     heel_down[0:10] = True
-    toe_down[8:15] = True
-    delta = pivot_corrections(heel, toe, heel_down, toe_down, fps, release_s=0.25)
-    held_heel = heel[:10] + delta[:10]
-    assert np.allclose(held_heel, heel[0])
-    # Rolled onto the toe: it stays where it was at the roll, no jump.
-    held_toe = toe[10:15] + delta[10:15]
-    assert np.allclose(held_toe, toe[10] + delta[9])
+    toe_down[6:15] = True
+    shift, turn = pivot_corrections(ankle, heel, toe, yaw, heel_down, toe_down, fps,
+                                    release_s=0.25)
+
+    def placed(points, frame):
+        return ankle[frame] + shift[frame] + _turn_xz(turn[frame], points[frame] - ankle[frame])
+
+    heel_held = [placed(heel, f) for f in range(0, 6)]
+    assert np.allclose(heel_held, heel[0])
+    # Flat (both down): heel and toe both stay, the heading too.
+    flat_heel = [placed(heel, f) for f in range(6, 10)]
+    flat_toe = [placed(toe, f) for f in range(6, 10)]
+    assert np.allclose(flat_heel, flat_heel[0], atol=1e-9)
+    assert np.allclose(flat_toe, flat_toe[0], atol=1e-9)
+    assert np.allclose(yaw[6:10] + turn[6:10], yaw[6] + turn[6])
+    # Rolled onto the toe: it stays where it was, no jump.
+    toe_held = [placed(toe, f) for f in range(9, 15)]
+    assert np.allclose(toe_held, toe_held[0], atol=1e-9)
     # Lifted: the correction fades out within release_s.
-    assert np.linalg.norm(delta[15]) < np.linalg.norm(delta[14])
-    assert np.allclose(delta[15 + 5:], 0.0)
+    assert np.linalg.norm(shift[15]) < np.linalg.norm(shift[14])
+    assert np.allclose(shift[15 + 5:], 0.0) and np.allclose(turn[15 + 5:], 0.0)
 
 
 def test_a_sliding_planted_foot_is_held_by_the_leg_and_the_root_is_untouched():
@@ -49,7 +63,9 @@ def test_a_sliding_planted_foot_is_held_by_the_leg_and_the_root_is_untouched():
     trans = np.zeros((frames, 3))
     trans[:, 1] = 1.1
     trans[:, 2] = np.linspace(0.0, 0.06, frames)
-    locked, report = lock_planted_feet(pose, trans, skin, fps)
+    locked, locked_trans, report = lock_planted_feet(pose, trans, skin, fps)
+    # In reach: the root is not touched.
+    assert np.allclose(locked_trans, trans) and report["max_root_drop_m"] == 0.0
     for side, (heel_ids, _toe_ids) in sole_points(skin).items():
         before = posed_vertices(pose, trans, skin, heel_ids)[:, :, [0, 2]].mean(axis=1)
         after = posed_vertices(locked, trans, skin, heel_ids)[:, :, [0, 2]].mean(axis=1)
@@ -81,3 +97,25 @@ def test_a_toe_dipping_through_the_floor_is_raised_by_its_leg_not_the_body():
     # Eased: the legs change gradually, not in one frame.
     step = np.abs(np.diff(lifted[:, 4, 0]))
     assert step.max() < 0.5 * np.abs(lifted[:, 4, 0] - pose[:, 4, 0]).max() + 1e-9
+
+
+def test_a_held_foot_out_of_reach_brings_the_root_down_instead_of_sliding():
+    from wt_genesis.adapter.foot_lock import lock_planted_feet, sole_points
+    from wt_genesis.adapter.kimodo_poses import posed_vertices
+
+    skin = _skin()
+    frames, fps = 20, 20.0
+    pose = np.zeros((frames, 24, 3))
+    for hip, knee, ankle in ((1, 4, 7), (2, 5, 8)):
+        pose[:, hip, 0], pose[:, knee, 0], pose[:, ankle, 0] = -0.1, 0.2, -0.1
+    trans = np.zeros((frames, 3))
+    trans[:, 1] = 1.1
+    # Nearly straight legs; the body creeps 15 cm: the held feet are out of reach.
+    trans[:, 2] = np.linspace(0.0, 0.15, frames)
+    locked, locked_trans, report = lock_planted_feet(pose, trans, skin, fps)
+    assert report["max_root_drop_m"] > 0.005
+    assert np.allclose(locked_trans[:, [0, 2]], trans[:, [0, 2]])
+    assert (locked_trans[:, 1] <= trans[:, 1] + 1e-6).all()
+    for side, (heel_ids, _toe_ids) in sole_points(skin).items():
+        after = posed_vertices(locked, locked_trans, skin, heel_ids)[:, :, [0, 2]].mean(axis=1)
+        assert np.linalg.norm(after - after[0], axis=1).max() < 0.005
