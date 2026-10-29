@@ -246,6 +246,21 @@ def ground_end_pose(motion: dict, skin: SMPLSkin, *, support_height: float,
             over = float(np.median(seated[:, :, 1].min(axis=1))) - float(support_height)
             if over > 0.002:
                 root[:, 1] -= over * blend
+        # Through the sit-down Kimodo's feet dip under the floor (its seated
+        # feet sit 10 cm under its walking ones; bed_7601 couch): lifting the
+        # whole body for them held it 1.5-4.7 cm in the air and popped 3 cm in
+        # a frame. Each dipping foot is raised onto the floor instead (its
+        # own leg, two-bone IK), the body left where the blend put it.
+        moving = np.flatnonzero(~resting & (times >= start - FOOT_FIX_LEAD_S))
+        if len(moving):
+            dips = np.zeros((frames, 2))
+            for side, joints in enumerate(((7, 10), (8, 11))):
+                foot = skin.region(joints)
+                if len(foot):
+                    low = posed_vertices(pose[moving], root[moving], skin, foot)[:, :, 1].min(axis=1)
+                    dips[moving, side] = np.maximum(-low, 0.0)
+            if dips.any():
+                pose = raise_seated_legs(pose, root, skin, dips)
     everything = posed_vertices(pose, root, skin)
     floor = everything[:, :, 1].min(axis=1)
     need = np.maximum(-floor, 0.0)
@@ -292,6 +307,8 @@ def ground_end_pose(motion: dict, skin: SMPLSkin, *, support_height: float,
 #: SMPL legs (hip, knee, ankle joints) and the most a seated knee is raised.
 SMPL_LEGS = ((1, 4, 7), (2, 5, 8))
 MAX_LEG_RAISE_M = 0.10
+#: Feet dipping under the floor are raised from this long before the walk ends.
+FOOT_FIX_LEAD_S = 0.5
 
 
 def _turn(source, target):
@@ -314,13 +331,17 @@ def raise_seated_legs(pose: np.ndarray, trans: np.ndarray, skin: SMPLSkin,
     plane, knee bending the way it bent) and the foot turned as it was in
     the world: the sole comes up flat, not forward or back (no slide)."""
     pose = np.array(pose, dtype=np.float64, copy=True)
-    raise_m = np.asarray(raise_m, dtype=np.float64).reshape(-1)
+    raise_m = np.asarray(raise_m, dtype=np.float64)
+    if raise_m.ndim == 1:  # both legs alike; else (frames, 2): left, right
+        raise_m = np.repeat(raise_m[:, None], 2, axis=1)
     rotations, positions = _world_joints(pose, trans, skin)
-    for frame in np.flatnonzero(raise_m > 1e-6):
-        for hip, knee, ankle in SMPL_LEGS:
+    for frame in np.flatnonzero((raise_m > 1e-6).any(axis=1)):
+        for leg, (hip, knee, ankle) in enumerate(SMPL_LEGS):
+            if raise_m[frame, leg] <= 1e-6:
+                continue
             h, k, a = positions[frame, hip], positions[frame, knee], positions[frame, ankle]
             thigh, shin = float(np.linalg.norm(k - h)), float(np.linalg.norm(a - k))
-            goal = a + np.array([0.0, float(raise_m[frame]), 0.0])
+            goal = a + np.array([0.0, float(raise_m[frame, leg]), 0.0])
             reach = float(np.linalg.norm(goal - h))
             if reach < 1e-6 or reach >= thigh + shin:
                 continue
