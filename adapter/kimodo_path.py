@@ -440,6 +440,9 @@ def _ground_end_pose_asset(motion_asset, plan: RootPathPlan, end_pose, skin) -> 
         rest=(rest_start, duration), fps=motion_asset.fps,
         support_rect=_clip_rect(end_pose.support_rect, plan.origin),
         lift_feet=end_pose.kind == "sit")
+    # The clip as Kimodo made it, beside the grounded one (self-checks compare
+    # the grounding's changes against it).
+    np.savez(str(motion_asset.motion_path).replace(".npz", ".ungrounded.npz"), **stored)
     stored["root"] = np.asarray(grounded["smpl_trans"][0], dtype=stored["root"].dtype)
     stored["smpl_pose"] = np.asarray(grounded["smpl_pose"][0], dtype=stored["smpl_pose"].dtype)
     np.savez(motion_asset.motion_path, **stored)
