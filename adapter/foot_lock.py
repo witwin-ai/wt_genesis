@@ -30,8 +30,12 @@ from .kimodo_poses import SMPLSkin, _turn, _world_joints, posed_vertices
 #: SMPL hip, knee, ankle, toe joints per leg.
 LEGS = {"L": (1, 4, 7, 10), "R": (2, 5, 8, 11)}
 SOLE_BAND_M = 0.03
-CONTACT_M = 0.01
-PLANTED_MPS = 0.5
+#: Looser than a skate check's planted test (1 cm, 0.5 m/s), so a touchdown
+#: is caught before it slows.
+CONTACT_M = 0.015
+PLANTED_MPS = 0.8
+#: The root comes down at most this far for a held foot out of reach.
+MAX_ROOT_DROP_M = 0.03
 MIN_CONTACT_S = 0.1
 RELEASE_S = 0.25
 #: A leg is never stretched past this share of its full length.
@@ -102,11 +106,17 @@ def pivot_corrections(ankle_xz, heel_xz, toe_xz, yaw, heel_down, toe_down, fps,
     (the foot rolls about it); toe only: the toe; both (foot flat): the sole
     centre and the foot's heading, so neither end creeps. A flat foot that
     Kimodo turns more than ``max_turn`` on the spot pivots on its toe instead
-    (the leg would twist). Both fade out over ``release_s`` once the foot lifts."""
+    (the leg would twist).
+
+    Each contact is held where Kimodo had the foot on average over it (not
+    where it touched down): the correction is centred, half the slide at
+    either end, so the leg reaches it. In the swing between two contacts the
+    correction blends from the one to the next; before the first and after
+    the last it eases in and out over ``release_s``."""
     frames = len(ankle_xz)
     shift, turn = np.zeros((frames, 2)), np.zeros(frames)
-    state, hold, heading, lifted = None, None, 0.0, None
-    carried = (np.zeros(2), 0.0)
+    state, hold, heading = None, None, 0.0
+    swing = np.zeros(frames, dtype=bool)
 
     def pivot(kind, at):
         return {"heel": heel_xz[at], "toe": toe_xz[at],
@@ -118,11 +128,7 @@ def pivot_corrections(ankle_xz, heel_xz, toe_xz, yaw, heel_down, toe_down, fps,
         ankle = ankle_xz[frame]
         previous = (shift[frame - 1], turn[frame - 1]) if frame else (np.zeros(2), 0.0)
         if now is None:
-            if lifted is None:
-                lifted = frame
-            fade = _smooth_fade((frame - lifted + 1) / (release_s * fps))
-            shift[frame], turn[frame] = carried[0] * fade, carried[1] * fade
-            state = None
+            swing[frame], state = True, None
             continue
         if now == "flat" and state == "flat" \
                 and abs(math.remainder(heading - yaw[frame], 2 * math.pi)) > max_turn:
@@ -138,7 +144,26 @@ def pivot_corrections(ankle_xz, heel_xz, toe_xz, yaw, heel_down, toe_down, fps,
                  else previous[1])
         shift[frame] = hold - ankle - _turn_xz(angle, pivot(now, frame) - ankle)
         turn[frame] = angle
-        carried, lifted, state = (shift[frame], angle), None, now
+        state = now
+    contacts = _runs(~swing, 1)
+    for start, end in contacts:
+        shift[start:end] -= shift[start:end].mean(axis=0)
+    ease = max(1.0, release_s * fps)
+    gaps = _runs(swing, 1)
+    for start, end in gaps:
+        before = (shift[start - 1], turn[start - 1]) if start > 0 else None
+        after = (shift[end], turn[end]) if end < frames else None
+        for frame in range(start, end):
+            if before is not None and after is not None:
+                weight = 1.0 - _smooth_fade((frame - start + 1) / (end - start + 1))
+                shift[frame] = before[0] * (1 - weight) + after[0] * weight
+                turn[frame] = before[1] * (1 - weight) + after[1] * weight
+            elif before is not None:
+                fade = _smooth_fade((frame - start + 1) / ease)
+                shift[frame], turn[frame] = before[0] * fade, before[1] * fade
+            elif after is not None:
+                fade = _smooth_fade((end - frame) / ease)
+                shift[frame], turn[frame] = after[0] * fade, after[1] * fade
     return shift, turn
 
 
@@ -242,7 +267,7 @@ def lock_planted_feet(pose, trans, skin: SMPLSkin, fps: float, *,
                         "max_correction_m": round(float(np.linalg.norm(shift, axis=1).max()), 4),
                         "max_turn_deg": round(float(np.degrees(np.abs(turn).max())), 1)}
     ease = max(1, int(round(DIP_EASE_S * fps)))
-    drop = _ease_hold(np.maximum(goals["L"][2], goals["R"][2]), ease)
+    drop = _ease_hold(np.minimum(np.maximum(goals["L"][2], goals["R"][2]), MAX_ROOT_DROP_M), ease)
     drop[~allowed] = 0.0
     if drop.max() > 0.0:
         trans[:, 1] -= drop

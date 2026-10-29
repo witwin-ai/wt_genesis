@@ -34,7 +34,10 @@ def test_pivot_corrections_hold_the_heel_the_flat_foot_and_the_toe_and_fade_out(
         return ankle[frame] + shift[frame] + _turn_xz(turn[frame], points[frame] - ankle[frame])
 
     heel_held = [placed(heel, f) for f in range(0, 6)]
-    assert np.allclose(heel_held, heel[0])
+    assert np.allclose(heel_held, heel_held[0])
+    # Held where the foot was on average over the contact, not at touchdown:
+    # the correction is centred (the leg reaches it).
+    assert np.allclose(shift[:15].mean(axis=0), 0.0, atol=1e-9)
     # Flat (both down): heel and toe both stay, the heading too.
     flat_heel = [placed(heel, f) for f in range(6, 10)]
     flat_toe = [placed(toe, f) for f in range(6, 10)]
@@ -110,8 +113,8 @@ def test_a_held_foot_out_of_reach_brings_the_root_down_instead_of_sliding():
         pose[:, hip, 0], pose[:, knee, 0], pose[:, ankle, 0] = -0.1, 0.2, -0.1
     trans = np.zeros((frames, 3))
     trans[:, 1] = 1.1
-    # Nearly straight legs; the body creeps 15 cm: the held feet are out of reach.
-    trans[:, 2] = np.linspace(0.0, 0.15, frames)
+    # Nearly straight legs; the body creeps 40 cm: the held feet are out of reach.
+    trans[:, 2] = np.linspace(0.0, 0.4, frames)
     locked, locked_trans, report = lock_planted_feet(pose, trans, skin, fps)
     assert report["max_root_drop_m"] > 0.005
     assert np.allclose(locked_trans[:, [0, 2]], trans[:, [0, 2]])
