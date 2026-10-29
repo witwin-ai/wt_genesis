@@ -50,7 +50,8 @@ def test_a_lying_body_keeps_its_pelvis_where_smpl_puts_it(tmp_path, monkeypatch)
         backend=_lying_backend)
 
     track = scene.timeline_manager.clip.get_track(result.body_object_id, "Transform", "position")
-    upright, lying = (np.asarray(key.value) for key in track.keyframes[:2])
+    # The 90 deg turn in one frame gets sub-frame keys; frame 1 is the last key.
+    upright, lying = np.asarray(track.keyframes[0].value), np.asarray(track.keyframes[-1].value)
     # SMPL pelvis = trans + J0 = (2, 0.8, 3) in both frames; the body object
     # turns about its origin, so it must sit at pelvis - R J0.
     assert upright == pytest.approx([2.0, 1.0, 3.0], abs=1e-6)
