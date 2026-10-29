@@ -389,8 +389,11 @@ def lift_dipping_feet(pose, trans, skin: SMPLSkin, fps: float, *, floor: float =
     return pose.astype(np.float32), report
 
 
-#: An upright body whose lowest foot is over this above the floor floats.
-FLOAT_M = 0.003
+#: An upright body whose lowest foot stays over this above the floor for
+#: ``FLOAT_MIN_S`` floats (a lower or briefer gap is a step's double support;
+#: lowering those moved planted feet and pushed a sitter into the couch).
+FLOAT_M = 0.015
+FLOAT_MIN_S = 0.2
 
 
 def ground_upright_floats(pose, trans, skin: SMPLSkin, fps: float, *, floor: float = 0.0
@@ -409,7 +412,10 @@ def ground_upright_floats(pose, trans, skin: SMPLSkin, fps: float, *, floor: flo
     low = posed_vertices(pose, trans, skin, feet)[:, :, 1].min(axis=1)
     _rotations, positions = _world_joints(pose, trans, skin)
     upright = positions[:, 0, 1] > floor + UPRIGHT_PELVIS_M
-    lift = np.where(upright & (low - floor > FLOAT_M), low - floor, 0.0)
+    floating = np.zeros(len(low), dtype=bool)
+    for begin, end in _runs(upright & (low - floor > FLOAT_M), max(2, int(round(FLOAT_MIN_S * fps)))):
+        floating[begin:end] = True
+    lift = np.where(floating, low - floor, 0.0)
     ease = max(1, int(round(DIP_EASE_S * fps)))
     drop = _ease_hold(lift, ease)
     # Eased drops must not push a non-floating frame's feet through the floor.
