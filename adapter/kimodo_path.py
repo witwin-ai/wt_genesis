@@ -57,6 +57,8 @@ class RootPathPlan:
     end_heading_frames: int = 0
     loose_end_frames: int = 0
     sit_at: tuple[float, float] | None = None
+    end_pose: Any = None
+    end_pose_frames: int = 0
     _knot_xz: np.ndarray = field(default=None, repr=False)
 
     @property
@@ -98,10 +100,14 @@ class RootPathPlan:
 
         Every frame is constrained once: the start and end heading frames in
         sets of their own, the rest as a plain path. When sitting, the end
-        hold is left to the model (turn and sit) except its last frame.
+        hold is left to the model (turn and sit) except its last frame; with
+        an ``end_pose`` its last frames pin the pelvis (Kimodo ``Hips``
+        end effector) instead of the root path.
         """
         count = self.frame_count
         relative = self.frames_xz - np.asarray(self.origin).reshape(1, 2)
+        pose_frames = list(range(count - self.end_pose_frames, count)) if self.end_pose else []
+        count -= len(pose_frames)
         end_frames = set(range(count - self.end_heading_frames, count))
         start_frames = set(range(min(self.start_heading_frames, count))) - end_frames
         loose = set(range(count - 1 - self.loose_end_frames, count - 1))
@@ -123,6 +129,8 @@ class RootPathPlan:
             if heading is not None:
                 item["global_root_heading"] = [[math.cos(heading), math.sin(heading)]] * len(indices)
             sets.append(item)
+        if pose_frames:
+            sets.append(self.end_pose.constraint(pose_frames, self.origin))
         return sets
 
     def to_dict(self) -> dict[str, Any]:
@@ -135,6 +143,9 @@ class RootPathPlan:
             "start_heading": self.start_heading,
             "end_heading": self.end_heading,
             "sit_at": None if self.sit_at is None else list(self.sit_at),
+            "end_pose": None if self.end_pose is None else {
+                "kind": self.end_pose.kind, "hips": list(self.end_pose.hips),
+                "rotvec": list(self.end_pose.rotvec), "hold_s": self.end_pose.hold_s},
         }
 
 
@@ -149,6 +160,7 @@ def plan_root_path(
     start_heading: float | str | None = "auto",
     end_heading: float | None = None,
     sit_at: Sequence[float] | None = None,
+    end_pose: Any = None,
     max_duration_s: float = 20.0,
     fps: float = KIMODO_FPS,
 ) -> RootPathPlan:
@@ -226,7 +238,10 @@ def plan_root_path(
         start_heading=None if start_heading is None else float(start_heading),
         end_heading=None if end_heading is None else float(end_heading),
         start_heading_frames=start_frames, end_heading_frames=end_frames,
-        loose_end_frames=loose, sit_at=seat, _knot_xz=knot_xz,
+        loose_end_frames=loose, sit_at=seat, end_pose=end_pose,
+        end_pose_frames=(min(count - 1, max(1, int(round(end_pose.hold_s * fps))))
+                         if end_pose is not None else 0),
+        _knot_xz=knot_xz,
     )
 
 
