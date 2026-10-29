@@ -389,6 +389,53 @@ def lift_dipping_feet(pose, trans, skin: SMPLSkin, fps: float, *, floor: float =
     return pose.astype(np.float32), report
 
 
+#: A bone turning faster than this between frames (deg per 50 ms) is
+#: smoothed: the fall's left wrist flicked 74 deg in one 50 ms frame.
+MAX_TURN_DEG_PER_50MS = 35.0
+
+
+def limit_bone_turn_rate(pose, fps: float, *, max_deg_per_50ms: float = MAX_TURN_DEG_PER_50MS,
+                         bones: Sequence[int] | None = None, max_rounds: int = 20
+                         ) -> tuple[np.ndarray, dict]:
+    """``(pose, report)``: each bone (not the root) whose rotation steps over
+    ``max_deg_per_50ms`` between frames is smoothed around the step (a
+    weighted quaternion average of its neighbours, sign aligned) until it
+    no longer does; other frames are untouched."""
+    pose = np.array(pose, dtype=np.float64, copy=True)
+    frames = pose.shape[0]
+    # Per frame step allowed (a 20 fps frame is 50 ms).
+    limit = max_deg_per_50ms * (20.0 / fps) if fps > 0 else max_deg_per_50ms
+    report = {}
+    weights = np.array([1.0, 2.0, 3.0, 2.0, 1.0])
+    for bone in (bones if bones is not None else range(1, pose.shape[1])):
+        before = None
+        for _round in range(max_rounds):
+            turns = Rotation.from_rotvec(pose[:, bone])
+            step = np.degrees((turns[:-1].inv() * turns[1:]).magnitude())
+            if before is None:
+                before = float(step.max()) if len(step) else 0.0
+            bad = np.flatnonzero(step > limit)
+            if not len(bad):
+                break
+            quats = turns.as_quat()
+            for index in range(1, frames):  # one hemisphere
+                if np.dot(quats[index], quats[index - 1]) < 0:
+                    quats[index] = -quats[index]
+            smooth = quats.copy()
+            region = sorted({f for i in bad for f in range(i - 1, i + 3) if 0 < f < frames - 1})
+            for frame in region:
+                lo, hi = max(0, frame - 2), min(frames, frame + 3)
+                w = weights[2 - (frame - lo):2 + (hi - frame)]
+                mean = (quats[lo:hi] * w[:, None]).sum(axis=0)
+                smooth[frame] = mean / np.linalg.norm(mean)
+            pose[:, bone] = Rotation.from_quat(smooth).as_rotvec()
+        turns = Rotation.from_rotvec(pose[:, bone])
+        after = float(np.degrees((turns[:-1].inv() * turns[1:]).magnitude()).max()) if frames > 1 else 0.0
+        if before is not None and before > limit:
+            report[bone] = {"before_deg": round(before, 1), "after_deg": round(after, 1)}
+    return pose.astype(np.float32), report
+
+
 #: A first frame whose root turns more than this to the second (and more
 #: than twice the next frame's turn) is Kimodo's start glitch.
 FIRST_FRAME_JUMP_DEG = 12.0

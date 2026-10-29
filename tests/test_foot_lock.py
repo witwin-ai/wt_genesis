@@ -124,6 +124,22 @@ def test_a_held_foot_out_of_reach_brings_the_root_down_instead_of_sliding():
         assert np.linalg.norm(after - after[0], axis=1).max() < 0.005
 
 
+def test_a_wrist_flick_is_smoothed_under_the_turn_rate_gate():
+    from scipy.spatial.transform import Rotation
+    from wt_genesis.adapter.foot_lock import limit_bone_turn_rate
+
+    frames, fps = 30, 20.0
+    pose = np.zeros((frames, 24, 3))
+    pose[:, 20, 2] = np.where(np.arange(frames) < 15, 0.0, np.radians(74.0))  # one-frame flick
+    pose[:, 4, 0] = np.linspace(0.0, 0.5, frames)  # a slow knee stays as it is
+    smoothed, report = limit_bone_turn_rate(pose, fps)
+    turns = Rotation.from_rotvec(smoothed[:, 20])
+    assert np.degrees((turns[:-1].inv() * turns[1:]).magnitude()).max() <= 35.0 + 1e-6
+    assert report[20]["before_deg"] == pytest.approx(74.0, abs=0.1)
+    assert np.allclose(smoothed[:, 4], pose[:, 4], atol=1e-6)
+    assert np.allclose(smoothed[:8, 20], 0.0, atol=1e-6)  # far from the flick: untouched
+
+
 def test_a_first_frame_snapping_the_root_takes_the_second_frames_pose():
     from wt_genesis.adapter.foot_lock import settle_first_frame
 
