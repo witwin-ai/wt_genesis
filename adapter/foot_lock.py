@@ -389,6 +389,36 @@ def lift_dipping_feet(pose, trans, skin: SMPLSkin, fps: float, *, floor: float =
     return pose.astype(np.float32), report
 
 
+#: An upright body whose lowest foot is over this above the floor floats.
+FLOAT_M = 0.003
+
+
+def ground_upright_floats(pose, trans, skin: SMPLSkin, fps: float, *, floor: float = 0.0
+                          ) -> tuple[np.ndarray, dict]:
+    """``(trans, report)``: an upright body (pelvis over ``UPRIGHT_PELVIS_M``)
+    whose lowest foot is off the floor (Kimodo's walk to an armchair floated
+    3-6 cm through its first steps and turn) is lowered onto it, the drop
+    held around each float and eased in and out over ``DIP_EASE_S``; never
+    raised (a dipping toe is :func:`lift_dipping_feet`'s)."""
+    pose = np.asarray(pose, dtype=np.float64).reshape(len(trans), -1, 3)
+    trans = np.array(trans, dtype=np.float64, copy=True).reshape(-1, 3)
+    if len(trans) < 3:
+        return trans.astype(np.float32), {}
+    dominant = skin.skin_indices[np.arange(len(skin.skin_indices)), skin.skin_weights.argmax(axis=1)]
+    feet = np.flatnonzero(np.isin(dominant, (7, 8, 10, 11)))
+    low = posed_vertices(pose, trans, skin, feet)[:, :, 1].min(axis=1)
+    _rotations, positions = _world_joints(pose, trans, skin)
+    upright = positions[:, 0, 1] > floor + UPRIGHT_PELVIS_M
+    lift = np.where(upright & (low - floor > FLOAT_M), low - floor, 0.0)
+    ease = max(1, int(round(DIP_EASE_S * fps)))
+    drop = _ease_hold(lift, ease)
+    # Eased drops must not push a non-floating frame's feet through the floor.
+    drop = np.minimum(drop, np.maximum(low - floor, 0.0))
+    trans[:, 1] -= drop
+    return trans.astype(np.float32), {"max_drop_m": round(float(drop.max()), 4),
+                                      "frames": int((drop > 1e-5).sum())}
+
+
 #: A bone turning faster than this between frames (deg per 50 ms) is
 #: smoothed: the fall's left wrist flicked 74 deg in one 50 ms frame.
 MAX_TURN_DEG_PER_50MS = 35.0
