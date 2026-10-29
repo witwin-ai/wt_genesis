@@ -291,8 +291,12 @@ def lock_planted_feet(pose, trans, skin: SMPLSkin, fps: float, *,
 #: ``UPRIGHT_PELVIS_M``) standing over ``HOVER_M`` above the floor for
 #: ``HOVER_MIN_S`` is set down on it.
 HOVER_MPS = 0.1
+#: ... and turning slower than this (rad/s). = 0.35
 HOVER_M = 0.005
 HOVER_MIN_S = 0.3
+#: ... and turning slower than this (rad/s): a foot turning in the air is a
+#: pivot step (setting it down made the heel swivel on the floor, 4 cm).
+HOVER_TURN_RAD_S = 0.35
 UPRIGHT_PELVIS_M = 0.75
 HOVER_REST_M = 0.002
 
@@ -317,7 +321,11 @@ def set_down_hovering_feet(pose, trans, skin: SMPLSkin, fps: float, *, floor: fl
         foot = posed_vertices(pose, trans, skin, ids)
         low = foot[:, :, 1].min(axis=1)
         speed = np.linalg.norm(np.gradient(foot[:, :, [0, 2]].mean(axis=1), axis=0), axis=1) * fps
-        flags = upright & (speed < HOVER_MPS) & (low > floor + HOVER_M)
+        forward = rotations[:, ankle] @ np.array([0.0, 0.0, 1.0])
+        turning = np.abs(np.gradient(np.unwrap(np.arctan2(forward[:, 0], forward[:, 2])))) * fps
+        # A foot turning in the air is a pivot step, not a foot left standing up.
+        flags = (upright & (speed < HOVER_MPS) & (turning < HOVER_TURN_RAD_S)
+                 & (low > floor + HOVER_M))
         drop = np.zeros(len(low))
         for start, end in _runs(flags, max(2, int(round(HOVER_MIN_S * fps)))):
             depth = low[start:end] - floor - HOVER_REST_M
