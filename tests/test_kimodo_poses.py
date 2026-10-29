@@ -309,3 +309,27 @@ def test_feet_on_the_floor_under_a_seat_edge_do_not_lift_the_body():
 
     assert report["rest_support_gap_m"] == pytest.approx(0.0, abs=1e-6)
     assert report["rest_feet_lowest_m"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_a_sit_can_plant_both_feet_ahead_of_the_seat_with_vertical_shins():
+    # Pinned by the pelvis alone, Kimodo kept its seated feet ~0.1 m ahead of
+    # the pelvis: the shins came down 10 cm inside an armchair front.
+    from wt_genesis.adapter.kimodo_poses import (
+        EndPose, SOMA_LEGS, seated_leg_rotations, upright_pelvis)
+
+    pose = EndPose(kind="sit", hips=(2.0, 0.59, -0.6), rotvec=tuple(upright_pelvis(math.pi)),
+                   plant_feet=True)
+    item = pose.constraint([10, 11], (0.0, 0.0))
+
+    assert item["joint_names"] == ["Hips", "LeftFoot", "RightFoot"]
+    rotations = np.asarray(item["local_joints_rot"])
+    assert rotations.shape == (2, 30, 3)
+    for hip, knee in SOMA_LEGS.values():
+        # Thigh forward (about local X), shin back to vertical: the two cancel.
+        assert rotations[0, hip, 0] < -1.4 and rotations[0, knee, 0] == pytest.approx(
+            -rotations[0, hip, 0])
+    # A higher seat tilts the thighs down so the soles still reach the floor.
+    low, high = seated_leg_rotations(0.59), seated_leg_rotations(0.69)
+    assert -high[22][0] < -low[22][0]
+    assert EndPose(kind="sit", hips=(0.0, 0.59, 0.0), rotvec=(0.0, 0.0, 0.0)).constraint(
+        [0], (0.0, 0.0))["joint_names"] == ["Hips"]

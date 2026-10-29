@@ -68,19 +68,61 @@ class EndPose:
     #: The support's footprint (x0, z0, x1, z1) in the scene: no frame may
     #: sink into it on the way to the end pose.
     support_rect: tuple[float, float, float, float] | None = None
+    #: A sit also plants both feet (Kimodo ``LeftFoot``/``RightFoot`` end
+    #: effectors) where a seated leg pose puts them: shins vertical, soles flat
+    #: on the floor, ahead of the seat. With the pelvis alone Kimodo kept its
+    #: feet ~0.1 m ahead of the pelvis and the shins came down inside the seat
+    #: front (10.5 cm into an armchair, 10.1 cm into a bed side).
+    plant_feet: bool = False
 
     def constraint(self, frames: Sequence[int], origin: Sequence[float]) -> dict:
-        """The Kimodo ``end-effector`` constraint (Hips) on ``frames``,
-        relative to the route start ``origin`` (x, z)."""
+        """The Kimodo ``end-effector`` constraint (Hips, and the feet with
+        :attr:`plant_feet`) on ``frames``, relative to the route start
+        ``origin`` (x, z)."""
         x, y, z = (float(value) for value in self.hips)
-        local = [[list(map(float, self.rotvec))] + [[0.0, 0.0, 0.0]] * (SOMA30_JOINTS - 1)
-                 for _ in frames]
+        pose = [[0.0, 0.0, 0.0]] * SOMA30_JOINTS
+        pose[0] = list(map(float, self.rotvec))
+        names = ["Hips"]
+        if self.plant_feet:
+            for joint, rotvec in seated_leg_rotations(y).items():
+                pose[joint] = rotvec
+            names += ["LeftFoot", "RightFoot"]
+        local = [list(pose) for _ in frames]
         relative = [x - float(origin[0]), y, z - float(origin[1])]
-        return {"type": "end-effector", "joint_names": ["Hips"],
+        return {"type": "end-effector", "joint_names": names,
                 "frame_indices": [int(index) for index in frames],
                 "local_joints_rot": local,
                 "root_positions": [list(relative) for _ in frames],
                 "smooth_root_2d": [[relative[0], relative[2]] for _ in frames]}
+
+
+#: SOMA30 legs (Kimodo's bone order: LeftLeg 22, LeftShin 23, RightLeg 26,
+#: RightShin 27) and their rest lengths, from its rest skeleton: the hip
+#: joints 0.084 m under and 0.026 m ahead of Hips, thigh 0.433 m, shin
+#: 0.421 m (knee to the LeftFoot/ankle joint). Rest frames are aligned with
+#: the body (+Z forward), so a hip turned -a about local X lifts the thigh
+#: forward and the shin turned +a brings it back to vertical.
+SOMA_LEGS = {"left": (22, 23), "right": (26, 27)}
+SOMA_HIP_DROP_M = 0.084
+SOMA_THIGH_M = 0.433
+SOMA_SHIN_M = 0.421
+#: The ankle (LeftFoot) joint over the floor with the sole flat: the toe
+#: joint is 0.051 m under it at rest, the sole a little lower.
+SOMA_ANKLE_OVER_FLOOR_M = 0.075
+
+
+def seated_leg_rotations(hips_y: float, floor_y: float = 0.0) -> dict[int, list[float]]:
+    """Local axis-angle rotations of both SOMA legs for a seated pose with
+    the Hips joint at ``hips_y``: shins vertical, feet flat, the thighs tilted
+    down from horizontal just enough for the soles to reach the floor."""
+    drop = float(hips_y) - float(floor_y) - SOMA_HIP_DROP_M - SOMA_ANKLE_OVER_FLOOR_M
+    tilt = math.asin(min(max((drop - SOMA_SHIN_M) / SOMA_THIGH_M, 0.0), 0.8))
+    lift = math.pi / 2 - tilt
+    out = {}
+    for hip, knee in SOMA_LEGS.values():
+        out[hip] = [-lift, 0.0, 0.0]
+        out[knee] = [lift, 0.0, 0.0]
+    return out
 
 
 @dataclass(frozen=True)
