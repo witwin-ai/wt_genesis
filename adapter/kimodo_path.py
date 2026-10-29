@@ -519,7 +519,8 @@ def path_following_error(scene: Any, body_object_id: str, plan: RootPathPlan, *,
     steps = np.linalg.norm(np.diff(all_xz, axis=0), axis=1)
     moving = spans > 1e-9
     fastest = float((steps[moving] / spans[moving]).max()) if moving.any() else 0.0
-    if plan.sit_at is not None:
+    if plan.sit_at is not None or plan.end_pose is not None:
+        # Sitting, lying down and falling leave the route on purpose.
         walking = times - start_time <= plan.arrival_s + 1e-6
         times, values = times[walking], values[walking]
     xz = values[:, [0, 2]]

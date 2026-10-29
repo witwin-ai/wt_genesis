@@ -210,3 +210,25 @@ def test_the_walk_before_the_end_pose_stands_on_the_floor():
     assert after[:20] == pytest.approx(np.full(20, 1.0), abs=1e-6)   # foot on the floor
     assert report["walk_correction_m"] == pytest.approx(-0.07, abs=1e-6)
     assert after[-1] == pytest.approx(0.55)                           # still seated on 0.45
+
+
+def test_path_error_covers_the_walk_not_the_free_end_of_a_fall(tmp_path, monkeypatch):
+    # Lying down and falling leave the route on purpose after arriving; the
+    # bench refuses walks that stray > 0.15 m, so the free end must not count.
+    from tests.test_kimodo_path import ROUTE, _route_following_generator, _scene_with_tiny_skin
+    from wt_genesis.adapter.kimodo_path import create_humanoid_path_animation
+    from wt_genesis.adapter.kimodo_poses import EndPose
+
+    follow = _route_following_generator([])
+
+    def stumble(prompts, **kwargs):
+        motion = follow(prompts, **kwargs)
+        frames = motion["smpl_trans"].shape[1]
+        motion["smpl_trans"][0, frames - 20:, 0] += np.linspace(0.0, 0.8, 20)
+        return motion
+
+    result = create_humanoid_path_animation(
+        scene=_scene_with_tiny_skin(monkeypatch), project_dir=tmp_path, prompt="a person falls",
+        waypoints=ROUTE, end_hold_s=2.0, end_pose=EndPose(kind="fall"), generator=stumble)
+
+    assert result.path_following["timed_max_error_m"] < 0.05
