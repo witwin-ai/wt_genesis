@@ -294,34 +294,49 @@ SMPL_LEGS = ((1, 4, 7), (2, 5, 8))
 MAX_LEG_RAISE_M = 0.10
 
 
+def _turn(source, target):
+    """The smallest rotation (3x3) taking direction ``source`` onto ``target``."""
+    a = np.asarray(source, dtype=np.float64)
+    b = np.asarray(target, dtype=np.float64)
+    a = a / np.linalg.norm(a)
+    b = b / np.linalg.norm(b)
+    axis = np.cross(a, b)
+    sine = float(np.linalg.norm(axis))
+    if sine < 1e-12:
+        return np.eye(3)
+    return Rotation.from_rotvec(axis / sine * math.atan2(sine, float(np.dot(a, b)))).as_matrix()
+
+
 def raise_seated_legs(pose: np.ndarray, trans: np.ndarray, skin: SMPLSkin,
                       raise_m: np.ndarray) -> np.ndarray:
-    """``pose`` (frames, J, 3) with each thigh turned up about its hip (knee
-    up by ``raise_m`` per frame) and the shin and foot kept as they were in
-    the world: the foot rises by the same amount, flat as before."""
+    """``pose`` (frames, J, 3) with each ankle raised straight up by
+    ``raise_m`` per frame (two-bone IK of hip and knee in the leg's own
+    plane, knee bending the way it bent) and the foot turned as it was in
+    the world: the sole comes up flat, not forward or back (no slide)."""
     pose = np.array(pose, dtype=np.float64, copy=True)
     raise_m = np.asarray(raise_m, dtype=np.float64).reshape(-1)
     rotations, positions = _world_joints(pose, trans, skin)
     for frame in np.flatnonzero(raise_m > 1e-6):
-        for hip, knee, _ankle in SMPL_LEGS:
-            thigh = positions[frame, knee] - positions[frame, hip]
-            length = float(np.linalg.norm(thigh))
-            flat = math.hypot(float(thigh[0]), float(thigh[2]))
-            if length < 1e-6 or flat < 1e-6:
+        for hip, knee, ankle in SMPL_LEGS:
+            h, k, a = positions[frame, hip], positions[frame, knee], positions[frame, ankle]
+            thigh, shin = float(np.linalg.norm(k - h)), float(np.linalg.norm(a - k))
+            goal = a + np.array([0.0, float(raise_m[frame]), 0.0])
+            reach = float(np.linalg.norm(goal - h))
+            if reach < 1e-6 or reach >= thigh + shin:
                 continue
-            elevation = math.atan2(float(thigh[1]), flat)
-            target = min(math.sin(elevation) + float(raise_m[frame]) / length, 0.99)
-            turn = math.asin(target) - elevation
-            # The hip turns about its own side axis (horizontal, across the thigh).
-            side = np.cross(thigh / length, [0.0, 1.0, 0.0])
-            side /= np.linalg.norm(side)
-            spin = Rotation.from_rotvec(-side * turn).as_matrix()
-            # Sign: the turn must lift the knee; flip the axis if it lowers it.
-            if (spin @ thigh)[1] < thigh[1]:
-                spin = spin.T
+            unit = (goal - h) / reach
+            along = (thigh * thigh - shin * shin + reach * reach) / (2.0 * reach)
+            height = math.sqrt(max(thigh * thigh - along * along, 0.0))
+            bend = (k - h) - np.dot(k - h, unit) * unit
+            if np.linalg.norm(bend) < 1e-9:
+                continue
+            bend /= np.linalg.norm(bend)
+            new_knee = h + along * unit + height * bend
+            hip_world = _turn(k - h, new_knee - h) @ rotations[frame, hip]
+            shin_world = _turn(a - k, goal - new_knee) @ rotations[frame, knee]
+            foot_world = rotations[frame, ankle]
             parent = rotations[frame, skin.parents[hip]]
-            hip_world = spin @ rotations[frame, hip]
-            shin_world = rotations[frame, knee]
             pose[frame, hip] = Rotation.from_matrix(parent.T @ hip_world).as_rotvec()
             pose[frame, knee] = Rotation.from_matrix(hip_world.T @ shin_world).as_rotvec()
+            pose[frame, ankle] = Rotation.from_matrix(shin_world.T @ foot_world).as_rotvec()
     return pose
