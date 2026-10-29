@@ -65,6 +65,9 @@ class EndPose:
     support_height: float | None = None
     region_joints: tuple[int, ...] | None = None
     rest_s: float = 0.6
+    #: The support's footprint (x0, z0, x1, z1) in the scene: no frame may
+    #: sink into it on the way to the end pose.
+    support_rect: tuple[float, float, float, float] | None = None
 
     def constraint(self, frames: Sequence[int], origin: Sequence[float]) -> dict:
         """The Kimodo ``end-effector`` constraint (Hips) on ``frames``,
@@ -137,7 +140,10 @@ def posed_vertices(pose, trans, skin: SMPLSkin, vertex_ids=None) -> np.ndarray:
 def ground_end_pose(motion: dict, skin: SMPLSkin, *, support_height: float,
                     region_joints: Sequence[int] | None, transition: Sequence[float],
                     rest: Sequence[float], fps: float,
-                    foot_joints: Sequence[int] = FOOT_REGION_JOINTS) -> tuple[dict, dict]:
+                    foot_joints: Sequence[int] = FOOT_REGION_JOINTS,
+                    support_rect: Sequence[float] | None = None,
+                    support_tolerance: float = 0.02,
+                    smooth_s: float = 0.15) -> tuple[dict, dict]:
     """Stand the walk on the floor and rest the settled pose on its support.
 
     Before ``transition`` the lowest sole is put on the floor (the median over
@@ -147,6 +153,12 @@ def ground_end_pose(motion: dict, skin: SMPLSkin, *, support_height: float,
     ``transition``. Afterwards no frame may have a vertex below the floor.
     One clip-wide offset could not do both: after the SOMA -> SMPL retarget
     the seated feet sit lower than the walking ones, so the walk floated.
+
+    On the way there no frame may sink into the support: skin over its
+    footprint ``support_rect`` (x0, z0, x1, z1) stays within
+    ``support_tolerance`` of its top (getting onto a bed went 16 cm into the
+    mattress), and no skin goes below the floor. The lift this takes is
+    smoothed over ``smooth_s`` (a running maximum: never less than needed).
     """
     pose = np.asarray(motion["smpl_pose"], dtype=np.float64)
     trans = np.array(motion["smpl_trans"], dtype=np.float64, copy=True)
@@ -169,9 +181,24 @@ def ground_end_pose(motion: dict, skin: SMPLSkin, *, support_height: float,
         walk_level = float(np.median(soles[:, :, 1].min(axis=1)))
     blend = np.clip((times - start) / max(end - start, 1e-9), 0.0, 1.0)
     root[:, 1] += -walk_level * (1.0 - blend) - gap * blend
-    floor = posed_vertices(pose, root, skin)[:, :, 1].min(axis=1)
-    lifted = floor < 0.0
-    root[lifted, 1] += -floor[lifted]
+    everything = posed_vertices(pose, root, skin)
+    floor = everything[:, :, 1].min(axis=1)
+    need = np.maximum(-floor, 0.0)
+    onto_support = np.zeros(frames, dtype=bool)
+    if support_rect is not None:
+        x0, z0, x1, z1 = (float(value) for value in support_rect)
+        over = ((everything[:, :, 0] >= x0) & (everything[:, :, 0] <= x1)
+                & (everything[:, :, 2] >= z0) & (everything[:, :, 2] <= z1))
+        depth = np.where(over, float(support_height) - support_tolerance - everything[:, :, 1], 0.0)
+        sink = np.maximum(depth.max(axis=1), 0.0)
+        onto_support = sink > 0.0
+        need = np.maximum(need, sink)
+    width = int(round(float(smooth_s) * float(fps)))
+    if width > 0:
+        padded = np.pad(need, width, mode="edge")
+        need = np.array([padded[index:index + 2 * width + 1].max() for index in range(frames)])
+    lifted = need > 0.0
+    root[:, 1] += need
     # What the settled pose ends as (the floor guard can hold it up).
     settled = posed_vertices(pose[resting], root[resting], skin)
     support_gap = float(np.median(settled[:, ids, 1].min(axis=1))) - float(support_height)
@@ -183,6 +210,8 @@ def ground_end_pose(motion: dict, skin: SMPLSkin, *, support_height: float,
               "rest_gap_before_m": round(gap, 4), "rest_correction_m": round(-gap, 4),
               "rest_support_gap_m": round(support_gap, 4),
               "rest_feet_lowest_m": None if feet is None else round(feet, 4),
-              "frames_lifted_off_floor": int(lifted.sum()),
-              "deepest_floor_lift_m": round(float(-floor[lifted].min()) if lifted.any() else 0.0, 4)}
+              "frames_lifted_off_floor": int((floor < 0.0).sum()),
+              "frames_lifted_onto_support": int(onto_support.sum()),
+              "deepest_floor_lift_m": round(float(-floor.min()) if (floor < 0.0).any() else 0.0, 4),
+              "largest_lift_m": round(float(need.max()) if lifted.any() else 0.0, 4)}
     return grounded, report

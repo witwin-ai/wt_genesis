@@ -204,7 +204,7 @@ def test_the_walk_before_the_end_pose_stands_on_the_floor():
     bend[:20] = 0.0
     grounded, report = ground_end_pose(
         _clip(hips, bend), _tiny_skin(), support_height=0.45, region_joints=(0,),
-        transition=(1.0, 2.0), rest=(2.0, 2.95), fps=20.0, foot_joints=(1,))
+        transition=(1.0, 2.0), rest=(2.0, 2.95), fps=20.0, foot_joints=(1,), smooth_s=0.0)
     after = grounded["smpl_trans"][0, :, 1]
 
     assert after[:20] == pytest.approx(np.full(20, 1.0), abs=1e-6)   # foot on the floor
@@ -255,3 +255,38 @@ def test_the_report_measures_the_settled_pose_after_grounding():
     assert fine["rest_feet_lowest_m"] == pytest.approx(0.03, abs=1e-6)
     assert hover["rest_support_gap_m"] == pytest.approx(0.05, abs=1e-6)   # held up by the floor
     assert hover["rest_feet_lowest_m"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_no_frame_sinks_into_the_bed_on_the_way_to_lying_down():
+    # bench_7107: getting onto the bed, the body went 16 cm into a 0.35 m
+    # mattress; only the settled pose was put on the support.
+    from wt_genesis.adapter.kimodo_poses import ground_end_pose
+
+    # The buttock vertex passes over a 0.45 m support (x in [0.5, 2]) at 0.25 m
+    # in the middle of the clip, then settles at 0.45 m; the knee bend keeps
+    # the foot vertex on the floor.
+    frames = 60
+    hips = np.r_[np.full(20, 1.0), np.full(20, 0.35), np.full(20, 0.55)]
+    clip = _clip(hips, np.arccos(np.clip((hips - 0.5) / 0.5, -1.0, 1.0)))
+    clip["smpl_trans"][0, :, 0] = np.r_[np.zeros(20), np.full(40, 1.0)]
+    clip["smpl_pose"][0, 20:40, 1, 0] = 0.0          # a straight leg in the bed's frames...
+    clip["smpl_trans"][0, 20:40, 1] = 0.35           # ...the foot vertex would be at -0.65
+    skin = _seat_only_skin()                          # judge the buttock alone
+
+    grounded, report = ground_end_pose(
+        clip, skin, support_height=0.45, region_joints=(0,), transition=(1.0, 2.0),
+        rest=(2.0, 2.95), fps=20.0, support_rect=(0.5, -1.0, 2.0, 1.0), smooth_s=0.0)
+    buttock = grounded["smpl_trans"][0, :, 1] - 0.1
+
+    assert buttock[20:40].min() >= 0.45 - 0.02 - 1e-6   # never more than 2 cm into it
+    assert buttock[:20] == pytest.approx(np.full(20, 0.9))  # off the support: untouched
+    assert report["frames_lifted_onto_support"] > 0
+
+
+def test_a_support_rect_in_the_scene_is_moved_into_the_clip_frame():
+    # The clip is placed with its Kimodo origin on the route start, so clip
+    # (x, z) = scene (x, z) - route start.
+    from wt_genesis.adapter.kimodo_path import _clip_rect
+
+    assert _clip_rect((3.0, 1.0, 5.0, 2.5), (1.0, 2.0)) == pytest.approx((2.0, -1.0, 4.0, 0.5))
+    assert _clip_rect(None, (1.0, 2.0)) is None

@@ -410,6 +410,15 @@ def create_humanoid_path_animation(
                                occupancy=occupancy, end_pose_grounding=grounding)
 
 
+def _clip_rect(rect, origin):
+    """A scene footprint (x0, z0, x1, z1) in the clip's frame: placement puts
+    the Kimodo origin on the route start, so clip = scene - start."""
+    if rect is None:
+        return None
+    x0, z0, x1, z1 = (float(value) for value in rect)
+    return (x0 - origin[0], z0 - origin[1], x1 - origin[0], z1 - origin[1])
+
+
 def _ground_end_pose_asset(motion_asset, plan: RootPathPlan, end_pose, skin) -> dict[str, Any] | None:
     """Rest the generated clip's settled pose on its support, in the asset file."""
     from .kimodo_poses import ground_end_pose
@@ -428,7 +437,8 @@ def _ground_end_pose_asset(motion_asset, plan: RootPathPlan, end_pose, skin) -> 
     grounded, report = ground_end_pose(
         motion, skin, support_height=float(end_pose.support_height),
         region_joints=end_pose.region_joints, transition=(plan.arrival_s, rest_start),
-        rest=(rest_start, duration), fps=motion_asset.fps)
+        rest=(rest_start, duration), fps=motion_asset.fps,
+        support_rect=_clip_rect(end_pose.support_rect, plan.origin))
     stored["root"] = np.asarray(grounded["smpl_trans"][0], dtype=stored["root"].dtype)
     np.savez(motion_asset.motion_path, **stored)
     return {"kind": end_pose.kind, **report}
