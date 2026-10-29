@@ -182,7 +182,8 @@ def _route_following_generator(calls, *, start=(0.0, 0.92, 0.0), wobble=0.0):
         for item in constraints:
             for index, point in zip(item["frame_indices"], item["smooth_root_2d"]):
                 points[index] = point
-        count = max(points) + 1
+        # Like Kimodo: int(motion_length * fps) frames, constrained or not.
+        count = max(max(points) + 1, int(float(motion_length) * 30.0))
         known = sorted(points)
         source = np.array([[np.interp(index, known, [points[k][axis] for k in known])
                             for axis in (0, 1)] for index in range(count)], dtype=np.float64)
