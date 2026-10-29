@@ -122,3 +122,21 @@ def test_a_held_foot_out_of_reach_brings_the_root_down_instead_of_sliding():
     for side, (heel_ids, _toe_ids) in sole_points(skin).items():
         after = posed_vertices(locked, locked_trans, skin, heel_ids)[:, :, [0, 2]].mean(axis=1)
         assert np.linalg.norm(after - after[0], axis=1).max() < 0.005
+
+
+def test_a_first_frame_snapping_the_root_takes_the_second_frames_pose():
+    from wt_genesis.adapter.foot_lock import settle_first_frame
+
+    frames = 10
+    pose = np.zeros((frames, 24, 3))
+    pose[:, 0, 1] = np.r_[0.11, np.linspace(0.51, 0.6, frames - 1)]  # 23 deg, then 1 deg
+    pose[:, 4, 0] = 0.2
+    trans = np.zeros((frames, 3))
+    settled, _trans, report = settle_first_frame(pose, trans)
+    assert report["settled"] and report["first_turn_deg"] > 20
+    assert np.allclose(settled[0], pose[1]) and np.allclose(settled[1:], pose[1:])
+    # A clip that starts turning smoothly is left alone.
+    smooth = pose.copy()
+    smooth[:, 0, 1] = np.linspace(0.0, 0.9, frames)
+    kept, _trans, report = settle_first_frame(smooth, trans)
+    assert not report["settled"] and np.allclose(kept, smooth)

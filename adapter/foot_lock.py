@@ -14,8 +14,15 @@ off) is held where it was put down, and a flat foot (heel and toe down)
 keeps its heading too: the ankle goal is moved by the pivot's slide, and
 hip and knee reach it by two-bone IK in the leg's own plane, the foot
 keeping its world orientation but for that heading (the roll from heel to
-toe stays as Kimodo made it). The root and the upper body are not touched. When the
-foot lifts, the correction fades out over ``release_s`` while it swings.
+toe stays as Kimodo made it). Each contact is held where the foot was on
+average over it; in the swing the correction blends to the next contact's.
+The upper body is not touched; the root comes down at most 3 cm where a
+held foot is out of the leg's reach.
+
+Also here, the other clean-ups of a Kimodo clip on SMPL: a swinging toe
+dipping through the floor raised by its leg (``lift_dipping_feet``), a
+standing foot left in the air set down (``set_down_hovering_feet``) and
+the start glitch of a route walk's first frame (``settle_first_frame``).
 """
 from __future__ import annotations
 
@@ -380,3 +387,27 @@ def lift_dipping_feet(pose, trans, skin: SMPLSkin, fps: float, *, floor: float =
     if report["raised_frames"]:
         pose = raise_seated_legs(pose, trans, skin, raise_m)
     return pose.astype(np.float32), report
+
+
+#: A first frame whose root turns more than this to the second (and more
+#: than twice the next frame's turn) is Kimodo's start glitch.
+FIRST_FRAME_JUMP_DEG = 12.0
+
+
+def settle_first_frame(pose, trans) -> tuple[np.ndarray, np.ndarray, dict]:
+    """``(pose, trans, report)``: Kimodo's route walks start with the root
+    turned 17-34 deg off the second frame (the body snapped 23 deg in the
+    first 50 ms on the cross walk). Such a first frame takes the second
+    frame's pose (root height and place kept)."""
+    pose = np.array(pose, dtype=np.float64, copy=True).reshape(len(trans), -1, 3)
+    trans = np.array(trans, dtype=np.float64, copy=True).reshape(-1, 3)
+    if len(trans) < 3:
+        return pose.astype(np.float32), trans.astype(np.float32), {"settled": False}
+    root = Rotation.from_rotvec(pose[:3, 0])
+    first = float(np.degrees((root[0].inv() * root[1]).magnitude()))
+    second = float(np.degrees((root[1].inv() * root[2]).magnitude()))
+    settled = first > FIRST_FRAME_JUMP_DEG and first > 2.0 * second
+    if settled:
+        pose[0] = pose[1]
+    return pose.astype(np.float32), trans.astype(np.float32), {
+        "settled": settled, "first_turn_deg": round(first, 1), "next_turn_deg": round(second, 1)}
