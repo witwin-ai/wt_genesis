@@ -290,3 +290,22 @@ def test_a_support_rect_in_the_scene_is_moved_into_the_clip_frame():
 
     assert _clip_rect((3.0, 1.0, 5.0, 2.5), (1.0, 2.0)) == pytest.approx((2.0, -1.0, 4.0, 0.5))
     assert _clip_rect(None, (1.0, 2.0)) is None
+
+
+def test_feet_on_the_floor_under_a_seat_edge_do_not_lift_the_body():
+    # bench_7105: the guard looked at all skin over the armchair's footprint,
+    # including feet on the floor under its front edge, and lifted the seated
+    # person 30 cm. Only the support region (buttocks, back) is held up.
+    from wt_genesis.adapter.kimodo_poses import ground_end_pose
+
+    hips = [1.0] * 20 + list(np.linspace(1.0, 0.5, 20)) + [0.5] * 20
+    bend = np.arccos(np.clip((np.asarray(hips) - 0.5) / 0.5, -1.0, 1.0))
+    clip = _clip(hips, bend)
+    # Everything stands inside the seat's footprint, the foot on the floor.
+    grounded, report = ground_end_pose(
+        clip, _tiny_skin(), support_height=0.40, region_joints=(0,), transition=(1.0, 2.0),
+        rest=(2.0, 2.95), fps=20.0, support_rect=(-1.0, -1.0, 1.0, 1.0), smooth_s=0.0,
+        foot_joints=(1,))
+
+    assert report["rest_support_gap_m"] == pytest.approx(0.0, abs=1e-6)
+    assert report["rest_feet_lowest_m"] == pytest.approx(0.0, abs=1e-6)

@@ -154,8 +154,8 @@ def ground_end_pose(motion: dict, skin: SMPLSkin, *, support_height: float,
     One clip-wide offset could not do both: after the SOMA -> SMPL retarget
     the seated feet sit lower than the walking ones, so the walk floated.
 
-    On the way there no frame may sink into the support: skin over its
-    footprint ``support_rect`` (x0, z0, x1, z1) stays within
+    On the way there no frame may sink into the support: the region's skin
+    over its footprint ``support_rect`` (x0, z0, x1, z1) stays within
     ``support_tolerance`` of its top (getting onto a bed went 16 cm into the
     mattress), and no skin goes below the floor. The lift this takes is
     smoothed over ``smooth_s`` (a running maximum: never less than needed).
@@ -186,10 +186,14 @@ def ground_end_pose(motion: dict, skin: SMPLSkin, *, support_height: float,
     need = np.maximum(-floor, 0.0)
     onto_support = np.zeros(frames, dtype=bool)
     if support_rect is not None:
+        # Only the support region is held up: feet may stand on the floor
+        # under a seat's front edge or beside a bed (they lifted a seated
+        # person 30 cm when every vertex counted).
         x0, z0, x1, z1 = (float(value) for value in support_rect)
-        over = ((everything[:, :, 0] >= x0) & (everything[:, :, 0] <= x1)
-                & (everything[:, :, 2] >= z0) & (everything[:, :, 2] <= z1))
-        depth = np.where(over, float(support_height) - support_tolerance - everything[:, :, 1], 0.0)
+        carried = everything[:, ids]
+        over = ((carried[:, :, 0] >= x0) & (carried[:, :, 0] <= x1)
+                & (carried[:, :, 2] >= z0) & (carried[:, :, 2] <= z1))
+        depth = np.where(over, float(support_height) - support_tolerance - carried[:, :, 1], 0.0)
         sink = np.maximum(depth.max(axis=1), 0.0)
         onto_support = sink > 0.0
         need = np.maximum(need, sink)
