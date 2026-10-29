@@ -15,6 +15,8 @@ from .kimodo_motion import SMPLRestSkeleton, ground_smpl_motion, load_kimodo_mot
 
 
 DEFAULT_MODEL = "Kimodo-SOMA-RP-v1.1"
+#: The SMPL clips a Kimodo run is resampled to.
+KIMODO_FPS = 20.0
 #: (python, source root) pairs whose import probe already succeeded in this
 #: process; a batch probes once, not before every clip.
 _READY_RUNTIMES: set[tuple[str, str]] = set()
@@ -154,11 +156,20 @@ def generate_smpl_motion(
         )
         if not generated.is_file():
             raise RuntimeError(f"Kimodo completed without producing expected output: {generated.name}")
-        motion = load_kimodo_motion(generated, target_fps=20.0)
+        motion = load_kimodo_motion(generated, target_fps=KIMODO_FPS)
     skeleton = smpl_rest_skeleton()
     if skeleton is not None:
         motion, lift = ground_smpl_motion(motion, skeleton)
         motion["grounding_lift_m"] = lift
+    skin = smpl_skin()
+    if skin is not None:
+        # SOMA's root path on SMPL's legs slides a planted foot 6-15 cm.
+        from .foot_lock import lock_planted_feet
+
+        pose, report = lock_planted_feet(motion["smpl_pose"][0], motion["smpl_trans"][0], skin,
+                                         KIMODO_FPS)
+        motion["smpl_pose"] = pose[None].astype(np.float32)
+        motion["foot_lock"] = report
     return motion
 
 
