@@ -23,6 +23,8 @@ SOMA30_JOINTS = 30
 #: when lying on the back (pelvis and spine).
 SEAT_REGION_JOINTS = (0, 1, 2)
 BACK_REGION_JOINTS = (0, 3, 6, 9)
+#: Ankles and toes: the soles a walk stands on.
+FOOT_REGION_JOINTS = (7, 8, 10, 11)
 #: A vertex belongs to a region when this share of its weight is on it.
 REGION_WEIGHT = 0.5
 
@@ -134,13 +136,17 @@ def posed_vertices(pose, trans, skin: SMPLSkin, vertex_ids=None) -> np.ndarray:
 
 def ground_end_pose(motion: dict, skin: SMPLSkin, *, support_height: float,
                     region_joints: Sequence[int] | None, transition: Sequence[float],
-                    rest: Sequence[float], fps: float) -> tuple[dict, dict]:
-    """Rest the settled pose on its support; leave the walk before it alone.
+                    rest: Sequence[float], fps: float,
+                    foot_joints: Sequence[int] = FOOT_REGION_JOINTS) -> tuple[dict, dict]:
+    """Stand the walk on the floor and rest the settled pose on its support.
 
-    In the ``rest`` window (seconds) the lowest vertex of the ``region``
-    (buttocks, back, or the whole body) is raised or lowered onto
-    ``support_height``; the correction is blended in over ``transition``.
-    Afterwards no frame may have a vertex below the floor (y = 0).
+    Before ``transition`` the lowest sole is put on the floor (the median over
+    the walk: a walk always has a foot down); in the ``rest`` window (seconds)
+    the lowest vertex of the ``region`` (buttocks, back, or the whole body)
+    goes onto ``support_height``. The two corrections are blended over
+    ``transition``. Afterwards no frame may have a vertex below the floor.
+    One clip-wide offset could not do both: after the SOMA -> SMPL retarget
+    the seated feet sit lower than the walking ones, so the walk floated.
     """
     pose = np.asarray(motion["smpl_pose"], dtype=np.float64)
     trans = np.array(motion["smpl_trans"], dtype=np.float64, copy=True)
@@ -155,14 +161,21 @@ def ground_end_pose(motion: dict, skin: SMPLSkin, *, support_height: float,
     lowest = posed_vertices(pose[resting], root[resting], skin, ids)[:, :, 1].min(axis=1)
     gap = float(np.median(lowest)) - float(support_height)
     start, end = float(transition[0]), float(transition[1])
+    walking = times < start - 1e-9
+    walk_level = 0.0
+    sole_ids = skin.region(foot_joints)
+    if walking.any() and len(sole_ids):
+        soles = posed_vertices(pose[walking], root[walking], skin, sole_ids)
+        walk_level = float(np.median(soles[:, :, 1].min(axis=1)))
     blend = np.clip((times - start) / max(end - start, 1e-9), 0.0, 1.0)
-    root[:, 1] += -gap * blend
+    root[:, 1] += -walk_level * (1.0 - blend) - gap * blend
     floor = posed_vertices(pose, root, skin)[:, :, 1].min(axis=1)
     lifted = floor < 0.0
     root[lifted, 1] += -floor[lifted]
     grounded = dict(motion)
     grounded["smpl_trans"] = root.reshape(np.asarray(motion["smpl_trans"]).shape).astype(np.float32)
     report = {"support_height_m": round(float(support_height), 4),
+              "walk_correction_m": round(-walk_level, 4),
               "rest_gap_before_m": round(gap, 4), "rest_correction_m": round(-gap, 4),
               "frames_lifted_off_floor": int(lifted.sum()),
               "deepest_floor_lift_m": round(float(-floor[lifted].min()) if lifted.any() else 0.0, 4)}

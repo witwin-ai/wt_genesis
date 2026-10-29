@@ -192,3 +192,21 @@ def test_the_real_smpl_skin_stands_on_its_soles():
     # the seat region also holds the thighs, which rest on a seat when sitting.
     buttocks = skin.vertices[skin.region((0,)), 1].min()
     assert 0.05 < skin.joints[0, 1] - buttocks < 0.2
+
+
+def test_the_walk_before_the_end_pose_stands_on_the_floor():
+    # bench_7105 armchair: the clip-wide foot grounding was set by the seated
+    # frames (feet lower after the retarget), so the walk floated 6-7 cm.
+    from wt_genesis.adapter.kimodo_poses import ground_end_pose
+
+    hips = [1.07] * 20 + list(np.linspace(1.07, 0.5, 20)) + [0.5] * 20  # foot at +0.07 while walking
+    bend = np.arccos(np.clip((np.asarray(hips) - 0.5) / 0.5, -1.0, 1.0))
+    bend[:20] = 0.0
+    grounded, report = ground_end_pose(
+        _clip(hips, bend), _tiny_skin(), support_height=0.45, region_joints=(0,),
+        transition=(1.0, 2.0), rest=(2.0, 2.95), fps=20.0, foot_joints=(1,))
+    after = grounded["smpl_trans"][0, :, 1]
+
+    assert after[:20] == pytest.approx(np.full(20, 1.0), abs=1e-6)   # foot on the floor
+    assert report["walk_correction_m"] == pytest.approx(-0.07, abs=1e-6)
+    assert after[-1] == pytest.approx(0.55)                           # still seated on 0.45
