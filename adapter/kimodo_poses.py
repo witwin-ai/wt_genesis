@@ -107,16 +107,19 @@ SOMA_HIP_DROP_M = 0.084
 SOMA_THIGH_M = 0.433
 SOMA_SHIN_M = 0.421
 #: The ankle (LeftFoot) joint over the floor with the sole flat: the toe
-#: joint is 0.051 m under it at rest, the sole a little lower.
-SOMA_ANKLE_OVER_FLOOR_M = 0.075
+#: joint is 0.051 m under it at rest, the sole a little lower. At 0.075 m the
+#: retargeted SMPL soles came 3.2 cm under the floor with the buttocks on a
+#: 0.35 m bed (the floor guard then held the buttocks 3.2 cm up; bench_7107).
+SOMA_ANKLE_OVER_FLOOR_M = 0.11
 
 
 def seated_leg_rotations(hips_y: float, floor_y: float = 0.0) -> dict[int, list[float]]:
     """Local axis-angle rotations of both SOMA legs for a seated pose with
     the Hips joint at ``hips_y``: shins vertical, feet flat, the thighs tilted
-    down from horizontal just enough for the soles to reach the floor."""
+    down from horizontal just enough for the soles to reach the floor (up,
+    knees over the hips, on a seat lower than the shins)."""
     drop = float(hips_y) - float(floor_y) - SOMA_HIP_DROP_M - SOMA_ANKLE_OVER_FLOOR_M
-    tilt = math.asin(min(max((drop - SOMA_SHIN_M) / SOMA_THIGH_M, 0.0), 0.8))
+    tilt = math.asin(min(max((drop - SOMA_SHIN_M) / SOMA_THIGH_M, -0.6), 0.8))
     lift = math.pi / 2 - tilt
     out = {}
     for hip, knee in SOMA_LEGS.values():
