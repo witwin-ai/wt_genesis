@@ -164,12 +164,14 @@ def generate_smpl_motion(
     skin = smpl_skin()
     if skin is not None:
         # SOMA's root path on SMPL's legs slides a planted foot 6-15 cm.
-        from .foot_lock import lock_planted_feet
+        # A swinging toe skimming through the floor is raised by its leg first.
+        from .foot_lock import lift_dipping_feet, lock_planted_feet
 
-        pose, report = lock_planted_feet(motion["smpl_pose"][0], motion["smpl_trans"][0], skin,
+        pose, lifted = lift_dipping_feet(motion["smpl_pose"][0], motion["smpl_trans"][0], skin,
                                          KIMODO_FPS)
+        pose, report = lock_planted_feet(pose, motion["smpl_trans"][0], skin, KIMODO_FPS)
         motion["smpl_pose"] = pose[None].astype(np.float32)
-        motion["foot_lock"] = report
+        motion["foot_lock"] = {**report, "lifted": lifted}
     return motion
 
 

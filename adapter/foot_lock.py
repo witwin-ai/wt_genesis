@@ -148,6 +148,8 @@ def lock_planted_feet(pose, trans, skin: SMPLSkin, fps: float, *,
     (a sit's legs, already placed by the grounding, are left alone)."""
     pose = np.array(pose, dtype=np.float64, copy=True).reshape(len(trans), -1, 3)
     trans = np.asarray(trans, dtype=np.float64).reshape(-1, 3)
+    if len(trans) < 3:
+        return pose.astype(np.float32), {}
     allowed = np.ones(len(trans), dtype=bool)
     if frames is not None:
         allowed[:] = False
@@ -173,4 +175,45 @@ def lock_planted_feet(pose, trans, skin: SMPLSkin, fps: float, *,
         report[side] = {"planted_frames": int((heel_down | toe_down).sum()),
                         "max_correction_m": round(float(np.linalg.norm(delta, axis=1).max()), 4),
                         "max_unreached_m": round(residual, 4)}
+    return pose.astype(np.float32), report
+
+
+#: A foot this far under the floor is raised; the raise is eased in and out
+#: over ``DIP_EASE_S`` so the leg does not jump.
+DIP_TOLERANCE_M = 0.002
+DIP_EASE_S = 0.15
+
+
+def lift_dipping_feet(pose, trans, skin: SMPLSkin, fps: float, *, floor: float = 0.0,
+                      frames: Sequence[int] | None = None) -> tuple[np.ndarray, dict]:
+    """``(pose, report)``: a swinging toe that skims through the floor (Kimodo
+    dipped one 1.4 cm) is raised onto it by its own leg (two-bone IK, the foot
+    keeping its orientation); the body is not lifted."""
+    from .kimodo_poses import raise_seated_legs
+
+    pose = np.array(pose, dtype=np.float64, copy=True).reshape(len(trans), -1, 3)
+    trans = np.asarray(trans, dtype=np.float64).reshape(-1, 3)
+    dominant = skin.skin_indices[np.arange(len(skin.skin_indices)), skin.skin_weights.argmax(axis=1)]
+    ease = max(1, int(round(DIP_EASE_S * fps)))
+    raise_m = np.zeros((len(trans), 2))
+    for leg, side in enumerate(("L", "R")):
+        _hip, _knee, ankle, toe = LEGS[side]
+        ids = np.flatnonzero(np.isin(dominant, (ankle, toe)))
+        low = posed_vertices(pose, trans, skin, ids)[:, :, 1].min(axis=1)
+        dip = np.where(floor - low > DIP_TOLERANCE_M, floor - low, 0.0)
+        if frames is not None:
+            keep = np.zeros(len(dip), dtype=bool)
+            keep[np.asarray(frames, dtype=int)] = True
+            dip[~keep] = 0.0
+        # Hold each dip's depth around it and ease it in and out (no pop).
+        held = np.array([dip[max(0, i - ease):i + ease + 1].max() for i in range(len(dip))])
+        kernel = np.hanning(2 * ease + 3)[1:-1]
+        pad = ease + 1
+        smooth = np.convolve(np.pad(held, pad, mode="edge"), kernel / kernel.sum(),
+                             mode="same")[pad:pad + len(held)]
+        raise_m[:, leg] = np.maximum(smooth, dip)
+    report = {"max_dip_m": round(float(raise_m.max()), 4),
+              "raised_frames": int((raise_m > 1e-6).any(axis=1).sum())}
+    if report["raised_frames"]:
+        pose = raise_seated_legs(pose, trans, skin, raise_m)
     return pose.astype(np.float32), report

@@ -59,3 +59,25 @@ def test_a_sliding_planted_foot_is_held_by_the_leg_and_the_root_is_untouched():
     # Only the legs move: the pelvis and the upper body keep their rotations.
     untouched = [joint for joint in range(24) if joint not in (1, 2, 4, 5, 7, 8)]
     assert np.allclose(locked[:, untouched], pose[:, untouched])
+
+
+def test_a_toe_dipping_through_the_floor_is_raised_by_its_leg_not_the_body():
+    from wt_genesis.adapter.foot_lock import lift_dipping_feet
+    from wt_genesis.adapter.kimodo_poses import posed_vertices
+
+    skin = _skin()
+    frames, fps = 20, 20.0
+    pose = np.zeros((frames, 24, 3))
+    for hip, knee, ankle in ((1, 4, 7), (2, 5, 8)):
+        pose[:, hip, 0], pose[:, knee, 0], pose[:, ankle, 0] = -0.3, 0.6, -0.3
+    trans = np.zeros((frames, 3))
+    lowest = posed_vertices(pose[:1], trans[:1], skin)[0, :, 1].min()
+    trans[:, 1] = -lowest  # standing on y = 0
+    trans[8:12, 1] -= 0.012  # the body dips 1.2 cm for 0.2 s
+    lifted, report = lift_dipping_feet(pose, trans, skin, fps)
+    low = posed_vertices(lifted, trans, skin)[:, :, 1].min(axis=1)
+    assert low.min() > -0.0025
+    assert report["max_dip_m"] == pytest.approx(0.012, abs=0.002)
+    # Eased: the legs change gradually, not in one frame.
+    step = np.abs(np.diff(lifted[:, 4, 0]))
+    assert step.max() < 0.5 * np.abs(lifted[:, 4, 0] - pose[:, 4, 0]).max() + 1e-9
