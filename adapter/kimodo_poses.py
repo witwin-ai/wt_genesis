@@ -48,14 +48,21 @@ def supine_pelvis(head_direction: Sequence[float]) -> np.ndarray:
 
 @dataclass(frozen=True)
 class EndPose:
-    """Where the pelvis rests at the end: ``hips`` (x, y, z) in scene
-    coordinates with y above the floor, ``rotvec`` its Kimodo orientation,
-    held for the last ``hold_s`` seconds."""
+    """How a walk ends: ``kind`` (sit, lie, fall), where the pelvis rests
+    (``hips`` (x, y, z) in scene coordinates, y above the floor; ``rotvec`` its
+    Kimodo orientation) for the last ``hold_s`` seconds, and what the settled
+    body rests on: the lowest vertex of ``region_joints`` (None: the whole
+    body) goes on ``support_height`` over the last ``rest_s`` seconds. No
+    ``hips`` leaves the pose to Kimodo (a fall); no ``support_height`` skips
+    the grounding."""
 
     kind: str
-    hips: tuple[float, float, float]
-    rotvec: tuple[float, float, float]
+    hips: tuple[float, float, float] | None = None
+    rotvec: tuple[float, float, float] | None = None
     hold_s: float = 0.5
+    support_height: float | None = None
+    region_joints: tuple[int, ...] | None = None
+    rest_s: float = 0.6
 
     def constraint(self, frames: Sequence[int], origin: Sequence[float]) -> dict:
         """The Kimodo ``end-effector`` constraint (Hips) on ``frames``,

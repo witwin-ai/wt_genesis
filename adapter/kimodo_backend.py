@@ -166,6 +166,30 @@ def generate_smpl_motion(
 SMPL_FOOT_JOINTS = (7, 8, 10, 11)
 
 
+def _smpl_skin_asset():
+    from witwin.genesis.mdm_tiny_runtime import DEFAULT_MODEL_ROOT
+    from wt_humanoid.adapter.smpl_skinned import build_smpl_skin_asset
+
+    root = os.environ.get("WITWIN_SMPL_MODEL_ROOT") or str(DEFAULT_MODEL_ROOT)
+    return build_smpl_skin_asset(root, gender="neutral", betas=[0.0] * 10)
+
+
+def smpl_skin():
+    """The neutral SMPL body for skinning Genesis motions (zero betas), or
+    None when the licensed model files are missing."""
+    from .kimodo_poses import SMPLSkin
+
+    try:
+        asset = _smpl_skin_asset()
+    except Exception:  # noqa: BLE001 - grounding on the skin is skipped, not the clip
+        return None
+    return SMPLSkin(vertices=np.asarray(asset.vertices, dtype=np.float64),
+                    joints=np.asarray(asset.joint_positions, dtype=np.float64),
+                    parents=list(asset.parent_indices),
+                    skin_indices=np.asarray(asset.skin_indices, dtype=np.int64),
+                    skin_weights=np.asarray(asset.skin_weights, dtype=np.float64))
+
+
 def smpl_rest_skeleton() -> SMPLRestSkeleton | None:
     """The neutral SMPL rest skeleton Genesis bodies use (zero betas, as
     Kimodo clips have), or None when the licensed model files are missing."""

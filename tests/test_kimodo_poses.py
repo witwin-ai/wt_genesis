@@ -127,3 +127,68 @@ def test_no_frame_of_a_fall_goes_through_the_floor():
     assert lowest.min() >= -1e-6
     assert lowest[-1] == pytest.approx(0.0, abs=1e-6)       # at rest on the floor
     assert report["frames_lifted_off_floor"] == 0 or lowest.min() >= -1e-6
+
+
+def test_a_fall_is_left_to_kimodo_after_the_walk():
+    from wt_genesis.adapter.kimodo_path import plan_root_path
+    from wt_genesis.adapter.kimodo_poses import EndPose
+
+    fall = EndPose(kind="fall", support_height=0.0, region_joints=None)
+    plan = plan_root_path([(0.0, 0.0), (2.0, 0.0)], speed_mps=1.0, end_hold_s=3.0,
+                          end_pose=fall)
+    constraints = plan.kimodo_constraints()
+    pinned = {index for item in constraints for index in item["frame_indices"]}
+    arrival = int(round(plan.arrival_s * plan.fps))
+
+    assert all(item["type"] == "root2d" for item in constraints)
+    assert set(range(arrival + 1)) <= pinned
+    assert not pinned & set(range(arrival + 1, plan.frame_count))
+
+
+def _seat_only_skin():
+    from wt_genesis.adapter.kimodo_poses import SMPLSkin
+
+    skin = _tiny_skin()
+    return SMPLSkin(vertices=skin.vertices[:1], joints=skin.joints, parents=skin.parents,
+                    skin_indices=skin.skin_indices[:1], skin_weights=skin.skin_weights[:1])
+
+
+def test_a_path_animation_rests_its_end_pose_on_the_support(tmp_path, monkeypatch):
+    from tests.test_kimodo_path import ROUTE, _route_following_generator, _scene_with_tiny_skin
+    from wt_genesis.adapter.kimodo_path import create_humanoid_path_animation
+    from wt_genesis.adapter.kimodo_poses import EndPose, upright_pelvis
+
+    scene = _scene_with_tiny_skin(monkeypatch)
+    pose = EndPose(kind="sit", hips=(3.0, 0.55, 3.9), rotvec=tuple(upright_pelvis(math.pi)),
+                   support_height=0.45, region_joints=(0,))
+    result = create_humanoid_path_animation(
+        scene=scene, project_dir=tmp_path, prompt="a person walks over and sits down",
+        waypoints=ROUTE, sit_at=(3.0, 3.9), end_heading=math.pi, end_hold_s=2.0,
+        end_pose=pose, skin=_seat_only_skin(), generator=_route_following_generator([]))
+
+    grounding = result.end_pose_grounding
+    # The fake clip keeps its root at 0.92: the buttock vertex at 0.82 is
+    # 0.37 m above the 0.45 m seat, and is lowered onto it.
+    assert grounding["rest_gap_before_m"] == pytest.approx(0.37, abs=1e-3)
+    track = scene.timeline_manager.clip.get_track(
+        result.animation.body_object_id, "Transform", "position")
+    assert track.keyframes[-1].value[1] == pytest.approx(0.55, abs=1e-3)
+    assert track.keyframes[0].value[1] == pytest.approx(0.92, abs=1e-3)
+    assert result.to_dict()["end_pose_grounding"] == grounding
+
+
+def test_the_real_smpl_skin_stands_on_its_soles():
+    import wt_genesis.adapter.kimodo_backend as backend
+    from wt_genesis.adapter.kimodo_poses import BACK_REGION_JOINTS, SEAT_REGION_JOINTS, posed_vertices
+
+    skin = backend.smpl_skin()
+    if skin is None:
+        pytest.skip("licensed SMPL model files are not available")
+    rest = posed_vertices(np.zeros((1, 24, 3)), np.zeros((1, 3)), skin)[0]
+    assert rest.shape == skin.vertices.shape
+    assert np.allclose(rest, skin.vertices, atol=1e-6)  # rest pose is the bind pose
+    assert len(skin.region(SEAT_REGION_JOINTS)) > 200 and len(skin.region(BACK_REGION_JOINTS)) > 200
+    # The buttocks (pelvis-bound skin) sit about 0.1 m under the pelvis joint;
+    # the seat region also holds the thighs, which rest on a seat when sitting.
+    buttocks = skin.vertices[skin.region((0,)), 1].min()
+    assert 0.05 < skin.joints[0, 1] - buttocks < 0.2

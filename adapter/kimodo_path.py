@@ -59,6 +59,7 @@ class RootPathPlan:
     sit_at: tuple[float, float] | None = None
     end_pose: Any = None
     end_pose_frames: int = 0
+    loose_range: tuple[int, int] = (0, 0)
     _knot_xz: np.ndarray = field(default=None, repr=False)
 
     @property
@@ -106,11 +107,11 @@ class RootPathPlan:
         """
         count = self.frame_count
         relative = self.frames_xz - np.asarray(self.origin).reshape(1, 2)
-        pose_frames = list(range(count - self.end_pose_frames, count)) if self.end_pose else []
+        pose_frames = list(range(count - self.end_pose_frames, count)) if self.end_pose_frames else []
         count -= len(pose_frames)
         end_frames = set(range(count - self.end_heading_frames, count))
         start_frames = set(range(min(self.start_heading_frames, count))) - end_frames
-        loose = set(range(count - 1 - self.loose_end_frames, count - 1))
+        loose = set(range(*self.loose_range))
         plain = [index for index in range(count)
                  if index not in end_frames and index not in start_frames
                  and index not in loose]
@@ -229,9 +230,19 @@ def plan_root_path(
     if end_heading is not None:
         end_frames = max(1, min(int(round(END_HEADING_S * fps)), int(round(end_hold_s * fps))))
     loose = 0
+    loose_range = (0, 0)
+    arrival_frame = int(round(arrival * fps))
     if seat is not None:
-        loose = max(0, count - 2 - int(round(arrival * fps)))
+        # The end hold is the model's (turn and sit); the last frame is pinned.
+        loose = max(0, count - 2 - arrival_frame)
+        loose_range = (arrival_frame + 1, count - 1)
         end_frames = 1 if end_heading is not None else 0
+    elif end_pose is not None:
+        # Lying down or falling: after the walk the model is free, up to the
+        # pelvis pin (if any) on the last frames.
+        loose = max(0, count - 1 - arrival_frame)
+        loose_range = (arrival_frame + 1, count)
+        end_frames = 0
     return RootPathPlan(
         waypoints=points, knot_times=knot_times, frames_xz=frames, fps=float(fps),
         arrival_s=float(arrival),
@@ -240,7 +251,8 @@ def plan_root_path(
         start_heading_frames=start_frames, end_heading_frames=end_frames,
         loose_end_frames=loose, sit_at=seat, end_pose=end_pose,
         end_pose_frames=(min(count - 1, max(1, int(round(end_pose.hold_s * fps))))
-                         if end_pose is not None else 0),
+                         if end_pose is not None and end_pose.hips is not None else 0),
+        loose_range=loose_range,
         _knot_xz=knot_xz,
     )
 
@@ -297,11 +309,12 @@ class PathAnimationResult:
     plan: RootPathPlan
     path_following: dict[str, Any]
     occupancy: dict[str, Any]
+    end_pose_grounding: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = self.animation.to_dict()
         payload.update(plan=self.plan.to_dict(), path_following=self.path_following,
-                       occupancy=self.occupancy)
+                       occupancy=self.occupancy, end_pose_grounding=self.end_pose_grounding)
         return payload
 
 
@@ -322,6 +335,8 @@ def create_humanoid_path_animation(
     sit_at: Sequence[float] | None = None,
     sit_support_ids: Sequence[str] = (),
     max_seat_penetration_m: float = 0.10,
+    end_pose: Any = None,
+    skin: Any = None,
     max_duration_s: float = 20.0,
     seed: int = 10,
     device: int = 0,
@@ -342,12 +357,16 @@ def create_humanoid_path_animation(
     waypoint's y when it has one). ``sit_support_ids`` names a seat whose
     contact with the body (up to ``max_seat_penetration_m``) is support, not
     collision; pair it with ``sit_at`` so the model can turn and sit there.
+    ``end_pose`` (:class:`~.kimodo_poses.EndPose`) pins the pelvis at the end
+    (sit, lie) or leaves a fall to the model, and rests the settled body on
+    its support, measured on the posed SMPL ``skin`` (the licensed model by
+    default).
     """
     plan = plan_root_path(
         waypoints, speed_mps=speed_mps, waypoint_times=waypoint_times,
         start_hold_s=start_hold_s, end_hold_s=end_hold_s, ease_s=ease_s,
         start_heading=start_heading, end_heading=end_heading, sit_at=sit_at,
-        max_duration_s=max_duration_s,
+        end_pose=end_pose, max_duration_s=max_duration_s,
     )
     if floor_y is None:
         first = [float(value) for value in waypoints[0]]
@@ -364,6 +383,9 @@ def create_humanoid_path_animation(
         project_dir, prompt=text, motion_length=plan.kimodo_duration_s, seed=seed,
         device=device, output_name=output_name, backend=backend,
     )
+    grounding = None
+    if end_pose is not None and end_pose.support_height is not None:
+        grounding = _ground_end_pose_asset(motion_asset, plan, end_pose, skin)
     with np.load(motion_asset.motion_path) as data:
         first_root = np.asarray(data["root"], dtype=np.float64).reshape(-1, 3)[0]
     # Placement keys position + (trans - trans[0]); starting the body at
@@ -384,8 +406,32 @@ def create_humanoid_path_animation(
     following = path_following_error(scene, animation.body_object_id, plan,
                                      start_time=animation.start_time)
     occupancy = humanoid_occupancy(scene, animation.body_object_id, fps=occupancy_fps)
-    return PathAnimationResult(animation=animation, plan=plan,
-                               path_following=following, occupancy=occupancy)
+    return PathAnimationResult(animation=animation, plan=plan, path_following=following,
+                               occupancy=occupancy, end_pose_grounding=grounding)
+
+
+def _ground_end_pose_asset(motion_asset, plan: RootPathPlan, end_pose, skin) -> dict[str, Any] | None:
+    """Rest the generated clip's settled pose on its support, in the asset file."""
+    from .kimodo_poses import ground_end_pose
+
+    if skin is None:
+        from .kimodo_backend import smpl_skin
+
+        skin = smpl_skin()
+        if skin is None:
+            return None
+    with np.load(motion_asset.motion_path) as data:
+        stored = {key: data[key] for key in data.files}
+    duration = (motion_asset.frame_count - 1) / motion_asset.fps
+    rest_start = max(plan.arrival_s, duration - float(end_pose.rest_s))
+    motion = {"smpl_pose": stored["smpl_pose"][None], "smpl_trans": stored["root"][None]}
+    grounded, report = ground_end_pose(
+        motion, skin, support_height=float(end_pose.support_height),
+        region_joints=end_pose.region_joints, transition=(plan.arrival_s, rest_start),
+        rest=(rest_start, duration), fps=motion_asset.fps)
+    stored["root"] = np.asarray(grounded["smpl_trans"][0], dtype=stored["root"].dtype)
+    np.savez(motion_asset.motion_path, **stored)
+    return {"kind": end_pose.kind, **report}
 
 
 def _single_sentence(prompt: str) -> str:
