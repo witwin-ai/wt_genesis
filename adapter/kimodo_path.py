@@ -438,8 +438,10 @@ def _ground_end_pose_asset(motion_asset, plan: RootPathPlan, end_pose, skin) -> 
         motion, skin, support_height=float(end_pose.support_height),
         region_joints=end_pose.region_joints, transition=(plan.arrival_s, rest_start),
         rest=(rest_start, duration), fps=motion_asset.fps,
-        support_rect=_clip_rect(end_pose.support_rect, plan.origin))
+        support_rect=_clip_rect(end_pose.support_rect, plan.origin),
+        lift_feet=end_pose.kind == "sit")
     stored["root"] = np.asarray(grounded["smpl_trans"][0], dtype=stored["root"].dtype)
+    stored["smpl_pose"] = np.asarray(grounded["smpl_pose"][0], dtype=stored["smpl_pose"].dtype)
     np.savez(motion_asset.motion_path, **stored)
     return {"kind": end_pose.kind, **report}
 

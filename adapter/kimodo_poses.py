@@ -188,7 +188,7 @@ def ground_end_pose(motion: dict, skin: SMPLSkin, *, support_height: float,
                     foot_joints: Sequence[int] = FOOT_REGION_JOINTS,
                     support_rect: Sequence[float] | None = None,
                     support_tolerance: float = 0.02,
-                    smooth_s: float = 0.15) -> tuple[dict, dict]:
+                    smooth_s: float = 0.15, lift_feet: bool = False) -> tuple[dict, dict]:
     """Stand the walk on the floor and rest the settled pose on its support.
 
     Before ``transition`` the lowest sole is put on the floor (the median over
@@ -226,6 +226,26 @@ def ground_end_pose(motion: dict, skin: SMPLSkin, *, support_height: float,
         walk_level = float(np.median(soles[:, :, 1].min(axis=1)))
     blend = np.clip((times - start) / max(end - start, 1e-9), 0.0, 1.0)
     root[:, 1] += -walk_level * (1.0 - blend) - gap * blend
+    legs_raised = 0.0
+    if lift_feet and len(sole_ids):
+        # Buttocks on the seat put the soles under the floor (a seat lower
+        # than the SMPL lower leg): bend the legs, knees up, so the soles
+        # come up onto the floor instead of the floor guard holding the
+        # whole body off the seat (5.5 cm, bed_7601 couch).
+        # Raising the thighs lifts their undersides off the seat too: settle
+        # the buttocks and raise the soles again, twice.
+        for _round in range(3):
+            soles = posed_vertices(pose[resting], root[resting], skin, sole_ids)
+            under = -float(np.median(soles[:, :, 1].min(axis=1)))
+            if under <= 0.002 or legs_raised >= MAX_LEG_RAISE_M:
+                break
+            step = min(under, MAX_LEG_RAISE_M - legs_raised)
+            legs_raised += step
+            pose = raise_seated_legs(pose, root, skin, step * blend)
+            seated = posed_vertices(pose[resting], root[resting], skin, ids)
+            over = float(np.median(seated[:, :, 1].min(axis=1))) - float(support_height)
+            if over > 0.002:
+                root[:, 1] -= over * blend
     everything = posed_vertices(pose, root, skin)
     floor = everything[:, :, 1].min(axis=1)
     need = np.maximum(-floor, 0.0)
@@ -254,6 +274,8 @@ def ground_end_pose(motion: dict, skin: SMPLSkin, *, support_height: float,
     feet = float(np.median(settled[:, sole_ids, 1].min(axis=1))) if len(sole_ids) else None
     grounded = dict(motion)
     grounded["smpl_trans"] = root.reshape(np.asarray(motion["smpl_trans"]).shape).astype(np.float32)
+    grounded["smpl_pose"] = pose.reshape(np.asarray(motion["smpl_pose"]).shape).astype(
+        np.asarray(motion["smpl_pose"]).dtype)
     report = {"support_height_m": round(float(support_height), 4),
               "walk_correction_m": round(-walk_level, 4),
               "rest_gap_before_m": round(gap, 4), "rest_correction_m": round(-gap, 4),
@@ -262,5 +284,44 @@ def ground_end_pose(motion: dict, skin: SMPLSkin, *, support_height: float,
               "frames_lifted_off_floor": int((floor < 0.0).sum()),
               "frames_lifted_onto_support": int(onto_support.sum()),
               "deepest_floor_lift_m": round(float(-floor.min()) if (floor < 0.0).any() else 0.0, 4),
-              "largest_lift_m": round(float(need.max()) if lifted.any() else 0.0, 4)}
+              "largest_lift_m": round(float(need.max()) if lifted.any() else 0.0, 4),
+              "legs_raised_m": round(legs_raised, 4)}
     return grounded, report
+
+
+#: SMPL legs (hip, knee, ankle joints) and the most a seated knee is raised.
+SMPL_LEGS = ((1, 4, 7), (2, 5, 8))
+MAX_LEG_RAISE_M = 0.10
+
+
+def raise_seated_legs(pose: np.ndarray, trans: np.ndarray, skin: SMPLSkin,
+                      raise_m: np.ndarray) -> np.ndarray:
+    """``pose`` (frames, J, 3) with each thigh turned up about its hip (knee
+    up by ``raise_m`` per frame) and the shin and foot kept as they were in
+    the world: the foot rises by the same amount, flat as before."""
+    pose = np.array(pose, dtype=np.float64, copy=True)
+    raise_m = np.asarray(raise_m, dtype=np.float64).reshape(-1)
+    rotations, positions = _world_joints(pose, trans, skin)
+    for frame in np.flatnonzero(raise_m > 1e-6):
+        for hip, knee, _ankle in SMPL_LEGS:
+            thigh = positions[frame, knee] - positions[frame, hip]
+            length = float(np.linalg.norm(thigh))
+            flat = math.hypot(float(thigh[0]), float(thigh[2]))
+            if length < 1e-6 or flat < 1e-6:
+                continue
+            elevation = math.atan2(float(thigh[1]), flat)
+            target = min(math.sin(elevation) + float(raise_m[frame]) / length, 0.99)
+            turn = math.asin(target) - elevation
+            # The hip turns about its own side axis (horizontal, across the thigh).
+            side = np.cross(thigh / length, [0.0, 1.0, 0.0])
+            side /= np.linalg.norm(side)
+            spin = Rotation.from_rotvec(-side * turn).as_matrix()
+            # Sign: the turn must lift the knee; flip the axis if it lowers it.
+            if (spin @ thigh)[1] < thigh[1]:
+                spin = spin.T
+            parent = rotations[frame, skin.parents[hip]]
+            hip_world = spin @ rotations[frame, hip]
+            shin_world = rotations[frame, knee]
+            pose[frame, hip] = Rotation.from_matrix(parent.T @ hip_world).as_rotvec()
+            pose[frame, knee] = Rotation.from_matrix(hip_world.T @ shin_world).as_rotvec()
+    return pose
