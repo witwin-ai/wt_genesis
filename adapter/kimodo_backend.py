@@ -165,18 +165,21 @@ def generate_smpl_motion(
     if skin is not None:
         # SOMA's root path on SMPL's legs slides a planted foot 6-15 cm.
         # A swinging toe skimming through the floor is raised by its leg first.
-        from .foot_lock import (limit_bone_turn_rate, lift_dipping_feet, lock_planted_feet,
-                                set_down_hovering_feet, settle_first_frame)
+        from .foot_lock import (ground_upright_floats, limit_bone_turn_rate, lift_dipping_feet,
+                                lock_planted_feet, set_down_hovering_feet, settle_first_frame)
 
         pose, _trans, first = settle_first_frame(motion["smpl_pose"][0], motion["smpl_trans"][0])
         pose, smoothed = limit_bone_turn_rate(pose, KIMODO_FPS)
-        pose, lifted = lift_dipping_feet(pose, motion["smpl_trans"][0], skin, KIMODO_FPS)
-        pose, set_down = set_down_hovering_feet(pose, motion["smpl_trans"][0], skin, KIMODO_FPS)
-        pose, trans, report = lock_planted_feet(pose, motion["smpl_trans"][0], skin, KIMODO_FPS)
+        # An upright body floating over its feet (the armchair walk, 3-6 cm) comes down.
+        trans, grounded = ground_upright_floats(pose, motion["smpl_trans"][0], skin, KIMODO_FPS)
+        pose, lifted = lift_dipping_feet(pose, trans, skin, KIMODO_FPS)
+        pose, set_down = set_down_hovering_feet(pose, trans, skin, KIMODO_FPS)
+        pose, trans, report = lock_planted_feet(pose, trans, skin, KIMODO_FPS)
         motion["smpl_pose"] = pose[None].astype(np.float32)
         motion["smpl_trans"] = trans[None].astype(np.float32)
         motion["foot_lock"] = {**report, "lifted": lifted, "set_down": set_down,
-                               "first_frame": first, "smoothed_bones": smoothed}
+                               "first_frame": first, "smoothed_bones": smoothed,
+                               "floats_grounded": grounded}
     return motion
 
 

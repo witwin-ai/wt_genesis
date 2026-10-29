@@ -124,6 +124,24 @@ def test_a_held_foot_out_of_reach_brings_the_root_down_instead_of_sliding():
         assert np.linalg.norm(after - after[0], axis=1).max() < 0.005
 
 
+def test_an_upright_body_floating_over_its_feet_comes_down_and_is_never_raised():
+    from wt_genesis.adapter.foot_lock import ground_upright_floats
+    from wt_genesis.adapter.kimodo_poses import posed_vertices
+
+    skin = _skin()
+    frames, fps = 40, 20.0
+    pose = np.zeros((frames, 24, 3))
+    trans = np.zeros((frames, 3))
+    lowest = posed_vertices(pose[:1], trans[:1], skin)[0, :, 1].min()
+    trans[:, 1] = -lowest
+    trans[15:25, 1] += 0.05  # floats 5 cm for 0.5 s
+    grounded, report = ground_upright_floats(pose, trans, skin, fps)
+    low = posed_vertices(pose, grounded, skin)[:, :, 1].min(axis=1)
+    assert np.abs(low).max() < 0.004
+    assert (grounded[:, 1] <= trans[:, 1] + 1e-6).all()
+    assert report["max_drop_m"] == pytest.approx(0.05, abs=0.005)
+
+
 def test_a_wrist_flick_is_smoothed_under_the_turn_rate_gate():
     from scipy.spatial.transform import Rotation
     from wt_genesis.adapter.foot_lock import limit_bone_turn_rate
