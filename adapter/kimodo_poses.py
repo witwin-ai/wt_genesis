@@ -172,11 +172,17 @@ def ground_end_pose(motion: dict, skin: SMPLSkin, *, support_height: float,
     floor = posed_vertices(pose, root, skin)[:, :, 1].min(axis=1)
     lifted = floor < 0.0
     root[lifted, 1] += -floor[lifted]
+    # What the settled pose ends as (the floor guard can hold it up).
+    settled = posed_vertices(pose[resting], root[resting], skin)
+    support_gap = float(np.median(settled[:, ids, 1].min(axis=1))) - float(support_height)
+    feet = float(np.median(settled[:, sole_ids, 1].min(axis=1))) if len(sole_ids) else None
     grounded = dict(motion)
     grounded["smpl_trans"] = root.reshape(np.asarray(motion["smpl_trans"]).shape).astype(np.float32)
     report = {"support_height_m": round(float(support_height), 4),
               "walk_correction_m": round(-walk_level, 4),
               "rest_gap_before_m": round(gap, 4), "rest_correction_m": round(-gap, 4),
+              "rest_support_gap_m": round(support_gap, 4),
+              "rest_feet_lowest_m": None if feet is None else round(feet, 4),
               "frames_lifted_off_floor": int(lifted.sum()),
               "deepest_floor_lift_m": round(float(-floor[lifted].min()) if lifted.any() else 0.0, 4)}
     return grounded, report

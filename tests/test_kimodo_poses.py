@@ -232,3 +232,26 @@ def test_path_error_covers_the_walk_not_the_free_end_of_a_fall(tmp_path, monkeyp
         waypoints=ROUTE, end_hold_s=2.0, end_pose=EndPose(kind="fall"), generator=stumble)
 
     assert result.path_following["timed_max_error_m"] < 0.05
+
+
+def test_the_report_measures_the_settled_pose_after_grounding():
+    # bench_7105 #1: Kimodo sat 3.9 cm high; lowering it onto the seat put the
+    # feet through the floor, the floor guard lifted it back, and the buttocks
+    # hovered. The report shows what the settled pose ends as, for a gate.
+    from wt_genesis.adapter.kimodo_poses import ground_end_pose
+
+    hips = [1.0] * 20 + list(np.linspace(1.0, 0.5, 20)) + [0.5] * 20
+    bend = np.arccos(np.clip((np.asarray(hips) - 0.5) / 0.5, -1.0, 1.0))
+    # The seat is 0.43: lowering the buttock (0.40) is fine, but a seat at
+    # 0.35 would need the body 0.05 lower than the foot allows.
+    _grounded, fine = ground_end_pose(_clip(hips, bend), _tiny_skin(), support_height=0.43,
+                                      region_joints=(0,), transition=(1.0, 2.0),
+                                      rest=(2.0, 2.95), fps=20.0, foot_joints=(1,))
+    _grounded, hover = ground_end_pose(_clip(hips, bend), _tiny_skin(), support_height=0.35,
+                                       region_joints=(0,), transition=(1.0, 2.0),
+                                       rest=(2.0, 2.95), fps=20.0, foot_joints=(1,))
+
+    assert fine["rest_support_gap_m"] == pytest.approx(0.0, abs=1e-6)
+    assert fine["rest_feet_lowest_m"] == pytest.approx(0.03, abs=1e-6)
+    assert hover["rest_support_gap_m"] == pytest.approx(0.05, abs=1e-6)   # held up by the floor
+    assert hover["rest_feet_lowest_m"] == pytest.approx(0.0, abs=1e-6)
