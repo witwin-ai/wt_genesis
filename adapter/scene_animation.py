@@ -184,6 +184,12 @@ def create_humanoid_animation(
         gender=body.gender,
         betas=body.shape,
     )
+    _pivot_root_on_pelvis(root_motion, skin_asset.joint_positions[0])
+    if not actor_reused:
+        # The saved scene shows the static transform until the timeline
+        # first applies: at the placement's y = 0 the pelvis was 1.17 m into
+        # the floor on frame 0. Stand it where the root track starts.
+        body_obj.get_component("Transform").position = list(root_motion["positions"][0])
     trajectory_clearance = (
         validate_humanoid_trajectory(
             root_motion["positions"],
@@ -266,14 +272,14 @@ def create_humanoid_animation(
                 "interpolation": InterpolationType.LINEAR,
             },
         ]
-        for frame in range(motion_asset.frame_count):
-            time = frame / motion_asset.fps
+        for time, position, rotation in root_motion_keys(
+                root_motion, skin_asset.joint_positions[0], motion_asset.fps):
             keyframes.append(
                 {
                     "object_id": body_obj.id,
                     "component_name": "Transform",
                     "field_name": "position",
-                    "value": root_motion["positions"][frame],
+                    "value": position,
                     "time": time,
                     "interpolation": InterpolationType.LINEAR,
                 }
@@ -283,7 +289,7 @@ def create_humanoid_animation(
                     "object_id": body_obj.id,
                     "component_name": "Transform",
                     "field_name": "rotation",
-                    "value": root_motion["rotations"][frame],
+                    "value": rotation,
                     "time": time,
                     "interpolation": InterpolationType.LINEAR,
                 }
@@ -712,7 +718,21 @@ def _build_root_motion_tracks(motion_asset: MotionExportResult, position: list[f
     rotations = _continuous_euler_values(
         Rotation.from_rotvec(root_orient).as_euler("ZXY", degrees=False).astype(float).tolist()
     )
-    return {"positions": positions, "rotations": rotations}
+    return {"positions": positions, "rotations": rotations, "root_rotvecs": root_orient}
+
+
+def _pivot_root_on_pelvis(root_motion: dict[str, Any], pelvis: Sequence[float]) -> None:
+    """Make the body object turn about the SMPL pelvis joint, as SMPL does.
+
+    SMPL rotates the root about the pelvis joint ``pelvis`` (J0, 0.22 m under
+    the root translation); the body object turns about its own origin. Upright
+    the two agree, but a body lying down hovered ~0.2 m over the floor. Moving
+    the object to ``translation + J0 - R J0`` puts the pelvis where SMPL does.
+    """
+    offset = np.asarray(pelvis, dtype=np.float64).reshape(3)
+    turned = Rotation.from_rotvec(np.asarray(root_motion["root_rotvecs"], dtype=np.float64)).apply(offset)
+    positions = np.asarray(root_motion["positions"], dtype=np.float64) + offset - turned
+    root_motion["positions"] = positions.tolist()
 
 
 def _build_skeleton_rotation_keyframes(body_obj: SceneObject, motion_asset: MotionExportResult) -> tuple[int, list[dict[str, Any]]]:
@@ -729,24 +749,104 @@ def _build_skeleton_rotation_keyframes(body_obj: SceneObject, motion_asset: Moti
     track_count = 0
     keyframes: list[dict[str, Any]] = []
     for bone_index, bone_id in enumerate(skinned.bone_ids):
-        rotations = _continuous_euler_values([
-            _bone_rotation_euler(poses[frame], bone_index)
-            for frame in range(motion.frame_count)
-        ])
-        for frame in range(motion.frame_count):
-            time = frame / motion_asset.fps
+        for time, value in bone_rotation_keys(poses, bone_index, motion_asset.fps):
             keyframes.append(
                 {
                     "object_id": bone_id,
                     "component_name": "Transform",
                     "field_name": "rotation",
-                    "value": rotations[frame],
+                    "value": value,
                     "time": time,
                     "interpolation": InterpolationType.LINEAR,
                 }
             )
         track_count += 1
     return track_count, keyframes
+
+
+#: Studio lerps a rotation track per Euler (ZXY) component. Near X = +-90 deg
+#: (a knee bent like a sitter's) the components swing far for a small turn:
+#: a sit-down's knee keys jumped 1.4-1.6 rad apart and the leg whipped
+#: between them. Keys are added (quaternion slerp of the true rotation)
+#: until no component steps more than this between adjacent keys.
+MAX_EULER_STEP_RAD = 0.05
+#: At most this many sub-keys per motion frame (a turn straight through the
+#: singularity cannot be made smooth in Euler angles at all).
+MAX_SUBKEYS = 256
+
+
+def densified_euler(rotvecs: np.ndarray, *, max_step: float = MAX_EULER_STEP_RAD,
+                    max_subkeys: int = MAX_SUBKEYS) -> list[tuple[float, list[float]]]:
+    """``[(frame, ZXY euler)]`` for rotations (frames, 3) as rotation vectors:
+    every frame, plus sub-frame keys (quaternion slerp between the frames)
+    wherever a component would step over ``max_step``; the angles unwrapped
+    (no 2 pi jump between keys). ``frame`` is fractional for sub-keys."""
+    from scipy.spatial.transform import Slerp
+
+    rotvecs = np.asarray(rotvecs, dtype=np.float64).reshape(-1, 3)
+    rotations = Rotation.from_rotvec(rotvecs)
+    out = [(0.0, _continuous_euler_values([rotations[0].as_euler("ZXY").tolist()])[0])]
+    for frame in range(len(rotvecs) - 1):
+        slerp = Slerp([0.0, 1.0], rotations[frame:frame + 2])
+        count = 1
+        while True:
+            steps = np.linspace(0.0, 1.0, count + 1)[1:]
+            values = _continuous_euler_values(
+                [out[-1][1]] + slerp(steps).as_euler("ZXY").tolist())[1:]
+            previous = np.asarray([out[-1][1]] + values)
+            if np.abs(np.diff(previous, axis=0)).max() <= max_step or count >= max_subkeys:
+                break
+            count *= 2
+        for step, value in zip(steps, values):
+            out.append((frame + float(step), [float(v) for v in value]))
+    return out
+
+
+def bone_rotation_keys(poses: np.ndarray, bone_index: int, fps: float, *,
+                       max_step: float = MAX_EULER_STEP_RAD,
+                       max_subkeys: int = MAX_SUBKEYS) -> list[tuple[float, list[float]]]:
+    """``[(time, ZXY euler)]`` of one bone over the clip (:func:`densified_euler`)."""
+    frames = len(poses)
+    if bone_index == 0 or frames < 2:
+        values = _continuous_euler_values([_bone_rotation_euler(poses[frame], bone_index)
+                                           for frame in range(frames)])
+        return [(frame / fps, values[frame]) for frame in range(frames)]
+    rotvecs = np.stack([_bone_rotation_rotvec(poses[frame], bone_index) for frame in range(frames)])
+    return [(frame / fps, value) for frame, value in
+            densified_euler(rotvecs, max_step=max_step, max_subkeys=max_subkeys)]
+
+
+def root_motion_keys(root_motion: dict[str, Any], pelvis: Sequence[float], fps: float
+                     ) -> list[tuple[float, list[float], list[float]]]:
+    """``[(time, position, ZXY euler)]`` of the body root: the root rotation
+    densified as a bone's (a body lying or falling turns through X = 90 deg
+    too), each sub-key's position the lerped translation pivoted about the
+    pelvis with the slerped rotation (:func:`_pivot_root_on_pelvis`)."""
+    rotvecs = np.asarray(root_motion["root_rotvecs"], dtype=np.float64).reshape(-1, 3)
+    positions = np.asarray(root_motion["positions"], dtype=np.float64).reshape(-1, 3)
+    offset = np.asarray(pelvis, dtype=np.float64).reshape(3)
+    # The un-pivoted translation per frame.
+    translation = positions - offset + Rotation.from_rotvec(rotvecs).apply(offset)
+    out = []
+    for frame, value in densified_euler(rotvecs):
+        low = min(int(math.floor(frame)), len(positions) - 1)
+        if frame == low:
+            out.append((frame / fps, positions[low].tolist(), value))
+            continue
+        share = frame - low
+        moved = translation[low] * (1.0 - share) + translation[low + 1] * share
+        turned = Rotation.from_euler("ZXY", value).apply(offset)
+        out.append((frame / fps, (moved + offset - turned).tolist(), value))
+    return out
+
+
+def _bone_rotation_rotvec(pose: np.ndarray, bone_index: int) -> np.ndarray:
+    start = bone_index * 3
+    rotvec = np.zeros(3, dtype=np.float32)
+    available = max(0, min(3, pose.shape[0] - start))
+    if available:
+        rotvec[:available] = pose[start : start + available]
+    return rotvec
 
 
 def _bone_rotation_euler(pose: np.ndarray, bone_index: int) -> list[float]:

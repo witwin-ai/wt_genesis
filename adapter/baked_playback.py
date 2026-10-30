@@ -85,18 +85,33 @@ def select_playback_keyframes(
         groups.setdefault(path, []).append(key)
     if set(groups) != expected | {control_path}:
         raise ValueError("incomplete generated baked bundle: root, all bones and source keys are required")
+    root_paths = sorted({(body_object_id, "Transform", "position"),
+                         (body_object_id, "Transform", "rotation")})
     for path in expected:
         track_keys = sorted(groups[path], key=lambda item: item["time"])
-        if len(track_keys) != frame_count or any(
-            not math.isclose(key["time"], frame / rate, abs_tol=1e-9, rel_tol=1e-9)
-            for frame, key in enumerate(track_keys)
-        ):
-            raise ValueError(f"baked track must cover every source frame exactly once: {path}")
         # TimelineTrack.add_keyframe replaces keys within 0.0001 seconds.
         # Validate the actual bundle spacing, not only its nominal frame rate.
         if any(right["time"] - left["time"] <= .0001
                for left, right in zip(track_keys, track_keys[1:])):
             raise ValueError(f"baked source frames exceed Studio keyframe time resolution: {path}")
+        # A track may carry sub-frame keys (Euler densification near the ZXY
+        # singularity) but must key every source frame exactly once.
+        times = [key["time"] for key in track_keys]
+        on_grid = bool(times) and math.isclose(times[-1], (frame_count - 1) / rate,
+                                               abs_tol=1e-9, rel_tol=1e-9)
+        index = 0
+        for frame in range(frame_count):
+            while index < len(times) and times[index] < frame / rate - 1e-9:
+                index += 1
+            if index >= len(times) or not math.isclose(times[index], frame / rate,
+                                                       abs_tol=1e-9, rel_tol=1e-9):
+                on_grid = False
+                break
+        if not on_grid or not math.isclose(times[0], 0.0, abs_tol=1e-9):
+            raise ValueError(f"baked track must cover every source frame exactly once: {path}")
+    if ([key["time"] for key in sorted(groups[root_paths[0]], key=lambda item: item["time"])]
+            != [key["time"] for key in sorted(groups[root_paths[1]], key=lambda item: item["time"])]):
+        raise ValueError("baked root position and rotation must share their key times")
     control_keys = sorted(groups[control_path], key=lambda item: item["time"])
     end_time = max(1, frame_count - 1) / rate
     if len(control_keys) != 2 or any(
