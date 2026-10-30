@@ -234,8 +234,14 @@ def test_baked_animation_authors_one_pose_authority_and_preserves_existing_track
     assert result.timeline_track == {
         "path": f"{result.body_object_id}/Transform/position",
         "object_id": result.body_object_id,
-        "component_name": "Transform", "field_name": "position", "keyframe_count": 4,
+        "component_name": "Transform", "field_name": "position",
+        "keyframe_count": len(timeline.clip.get_track(result.body_object_id, "Transform",
+                                                      "position").keyframes),
     }
+    # Four source frames keyed (plus sub-frame keys where the fake clip turns fast).
+    rate = result.motion_asset.fps
+    assert sum(abs(key.time * rate - round(key.time * rate)) < 1e-6 for key in
+               timeline.clip.get_track(result.body_object_id, "Transform", "position").keyframes) >= 4
     assert timeline.current_time == 4. and timeline.fps == 30. and timeline.duration == 20.
     assert timeline.clip.get_track(existing.id, "Transform", "position").to_dict() == old_track
     assert existing.to_dict() == old_object

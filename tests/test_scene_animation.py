@@ -295,15 +295,23 @@ def test_generate_humanoid_animation_keys_root_motion_on_body_transform(tmp_path
     assert position_track is not None
     assert rotation_track is not None
     expected_positions = [[1.0, 0.0, 2.0], [1.5, 0.0, 2.0], [2.0, 0.0, 3.0]]
-    for keyframe, expected in zip(position_track.keyframes, expected_positions):
+    # The 90 deg turn in one frame gets sub-frame keys; the frames keep theirs.
+    fps = result.motion_asset.fps
+
+    def frame_keys(track):
+        return [key for key in track.keyframes
+                if abs(key.time * fps - round(key.time * fps)) < 1e-6]
+
+    assert len(frame_keys(position_track)) == 3 and len(frame_keys(rotation_track)) == 3
+    for keyframe, expected in zip(frame_keys(position_track), expected_positions):
         assert keyframe.value == pytest.approx(expected)
-    assert rotation_track.keyframes[1].value == pytest.approx(
-        Rotation.from_rotvec([0.0, 0.0, np.pi / 2.0]).as_euler("ZXY", degrees=False).tolist()
-    )
+    # The same rotation (the unwrapped Euler angles may be another equivalent set).
+    keyed = Rotation.from_euler("ZXY", frame_keys(rotation_track)[1].value)
+    assert (keyed.inv() * Rotation.from_rotvec([0.0, 0.0, np.pi / 2.0])).magnitude() < 1e-6
 
     scene.timeline_manager.set_time(2.0 / result.motion_asset.fps, apply_to_scene=True)
     assert transform.position.tolist() == pytest.approx([2.0, 0.0, 3.0])
-    assert transform.rotation.tolist() == pytest.approx(rotation_track.keyframes[2].value)
+    assert transform.rotation.tolist() == pytest.approx(frame_keys(rotation_track)[2].value)
 
 
 def test_generate_humanoid_animation_offsets_all_baked_tracks(tmp_path, monkeypatch):
@@ -495,9 +503,14 @@ def test_generate_humanoid_animation_builds_skinned_mesh_visual(tmp_path, monkey
     assert root_track is not None
     assert child_track is not None
     assert len(root_track.keyframes) == 3
-    assert len(child_track.keyframes) == 3
+    # The child turns far between frames: sub-frame keys keep each Euler
+    # component's step small (Studio lerps them), every frame still keyed.
+    fps = result.motion_asset.fps
+    child_times = [key.time for key in child_track.keyframes]
+    assert len(child_times) >= 3
+    assert all(any(abs(time - frame / fps) < 1e-9 for time in child_times) for frame in range(3))
     assert root_track.keyframes[2].value == pytest.approx([0.0, 0.0, 0.0])
-    assert child_track.keyframes[2].value != pytest.approx([0.0, 0.0, 0.0])
+    assert child_track.keyframes[-1].value != pytest.approx([0.0, 0.0, 0.0])
 
     scene.timeline_manager.set_time(2.0 / result.motion_asset.fps, apply_to_scene=True)
     child_bone = scene.get_object(visual.bone_ids[1])
