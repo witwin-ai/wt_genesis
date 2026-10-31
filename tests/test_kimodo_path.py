@@ -375,3 +375,36 @@ def test_path_following_reports_the_fastest_root_step(tmp_path, monkeypatch):
         speed_mps=1.0, generator=_route_following_generator([]))
 
     assert 0.9 <= result.path_following["max_root_speed_mps"] <= 1.1
+
+
+def test_prepare_motion_rewrites_the_clip_before_it_is_bound(tmp_path, monkeypatch):
+    # Clean-up passes (foot lock, a rest idle to the clip end) must change the
+    # clip before the binding bakes it: the pivoted, densified tracks are
+    # then written from the final clip, not re-baked afterwards.
+    import dataclasses
+
+    from wt_genesis.adapter.kimodo_path import create_humanoid_path_animation
+
+    seen = []
+
+    def prepare(motion_asset, plan):
+        data = dict(np.load(motion_asset.motion_path))
+        seen.append((motion_asset.frame_count, plan.arrival_s))
+        extra = 10
+        for key in ("smpl_pose", "shape", "root"):
+            data[key] = np.concatenate([data[key], np.repeat(data[key][-1:], extra, axis=0)])
+        np.savez(motion_asset.motion_path, **data)
+        return dataclasses.replace(motion_asset, frame_count=motion_asset.frame_count + extra)
+
+    scene = _scene_with_tiny_skin(monkeypatch)
+    result = create_humanoid_path_animation(
+        scene=scene, project_dir=tmp_path, prompt="a person walks", waypoints=ROUTE,
+        speed_mps=1.0, generator=_route_following_generator([]), prepare_motion=prepare)
+
+    frames, arrival = seen[0]
+    assert arrival == pytest.approx(result.plan.arrival_s)
+    assert result.animation.motion_asset.frame_count == frames + 10
+    assert result.animation.duration == pytest.approx((frames + 9) / 20.0)
+    track = scene.timeline_manager.clip.get_track(
+        result.animation.body_object_id, "Transform", "position")
+    assert max(key.time for key in track.keyframes) == pytest.approx((frames + 9) / 20.0)

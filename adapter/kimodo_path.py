@@ -347,6 +347,7 @@ def create_humanoid_path_animation(
     body_validator: Callable[[Any, str, float, float], dict[str, Any]] | None = None,
     generator: Callable[..., dict[str, Any]] | None = None,
     occupancy_fps: float = 10.0,
+    prepare_motion: Callable[[Any, RootPathPlan], Any] | None = None,
     **animation_kwargs: Any,
 ) -> PathAnimationResult:
     """Generate a Kimodo human walking ``waypoints`` and bind it in ``scene``.
@@ -360,7 +361,9 @@ def create_humanoid_path_animation(
     ``end_pose`` (:class:`~.kimodo_poses.EndPose`) pins the pelvis at the end
     (sit, lie) or leaves a fall to the model, and rests the settled body on
     its support, measured on the posed SMPL ``skin`` (the licensed model by
-    default).
+    default). ``prepare_motion(motion_asset, plan)`` may rewrite the grounded
+    clip file (a foot clean-up, a rest to the clip end) and returns the asset
+    to bind; the binding then bakes the final clip.
     """
     plan = plan_root_path(
         waypoints, speed_mps=speed_mps, waypoint_times=waypoint_times,
@@ -386,6 +389,8 @@ def create_humanoid_path_animation(
     grounding = None
     if end_pose is not None and end_pose.support_height is not None:
         grounding = _ground_end_pose_asset(motion_asset, plan, end_pose, skin)
+    if prepare_motion is not None:
+        motion_asset = prepare_motion(motion_asset, plan)
     with np.load(motion_asset.motion_path) as data:
         first_root = np.asarray(data["root"], dtype=np.float64).reshape(-1, 3)[0]
     # Placement keys position + (trans - trans[0]); starting the body at
