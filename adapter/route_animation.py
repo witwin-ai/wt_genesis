@@ -53,9 +53,49 @@ PIVOT_TOLERANCE_M = 2e-3
 SETTLED_M = 0.03
 CONTACT_EVENTS = {"sit": "seat_contact", "lie": "back_contact", "fall": "impact"}
 
+#: Where a seated pelvis is pinned over the seat top (SOMA -> SMPL: at 0.13 m
+#: the buttocks came 5-10 cm low), and how far it sits in from the front edge.
+SIT_PELVIS_ABOVE_SEAT_M = 0.24
+SEAT_SIT_DEPTH_M = 0.16
+#: A seat whose top is higher than this leaves the feet off the floor.
+SEAT_MAX_HEIGHT_M = 0.47
+#: The walk ends in front of the seat (the bench's approach is 0.45 m).
+SEAT_MAX_APPROACH_M = 1.0
+#: Seat and mattress contact the body may take as support, not collision.
+SEAT_SUPPORT_PENETRATION_M = 0.10
+BED_SUPPORT_PENETRATION_M = 0.15
+#: A lying pelvis: 0.20 m over the mattress, 0.95 m from the head end.
+LIE_PELVIS_ABOVE_TOP_M = 0.20
+LIE_PELVIS_FROM_HEAD_M = 0.95
+#: Kimodo's pelvis pin covers the last seconds of a sit or lie.
+POSE_PIN_S = 1.5
+#: A fall needs this much floor straight ahead of the last step, as wide as
+#: the body.
+FALL_REACH_M = 1.8
+FALL_BODY_RADIUS_M = 0.3
+#: Geometry this low over the floor is stepped on, not fallen against.
+FLOOR_ITEM_M = 0.05
+#: A seat's top is sampled on this grid round the sit point.
+TOP_SAMPLE_HALF_M = 0.15
+TOP_SAMPLE_POINTS = 5
+
 
 class RouteBackendUnavailable(RuntimeError):
     """The active person backend cannot follow a route or hold an end pose."""
+
+
+class RouteTargetUnsupported(ValueError):
+    """The end pose cannot be placed on the requested target from this route."""
+
+
+class FallZoneBlocked(ValueError):
+    """Furniture or a wall stands where the falling body would land."""
+
+    def __init__(self, blockers: list[dict[str, Any]]):
+        self.blockers = blockers
+        names = ", ".join(str(item["object_id"]) for item in blockers)
+        super().__init__(f"no clear floor to fall on: {names} within {FALL_REACH_M} m "
+                         "ahead of the last step")
 
 
 def require_route_backend(backend_name: str) -> None:
@@ -77,6 +117,7 @@ class RouteAnimationResult:
     binding: dict[str, Any]
     attempts: list[dict[str, Any]] = field(default_factory=list)
     end_pose: dict[str, Any] | None = None
+    target: dict[str, Any] | None = None
 
     @property
     def body_object_id(self) -> str:
@@ -97,7 +138,7 @@ class RouteAnimationResult:
                    "arrival_s": payload["plan"]["arrival_s"]},
             key_events={name: round(time, 4) for name, time in self.key_events.items()},
             rest=self.rest, foot_lock=self.foot_lock, binding=self.binding,
-            attempts=list(self.attempts), end_pose=self.end_pose,
+            attempts=list(self.attempts), end_pose=self.end_pose, target=self.target,
         )
         return payload
 
@@ -108,6 +149,11 @@ def create_route_animation(
     project_dir: str | Path,
     waypoints: Sequence[Sequence[float]],
     end: str = "stand",
+    target_object_id: str | None = None,
+    sit_at: Sequence[float] | None = None,
+    head_direction: Sequence[float] | None = None,
+    support_height_m: float | None = None,
+    geometry_reader: Callable[[Any], Sequence[dict[str, Any]]] | None = None,
     prompt: str | None = None,
     style_hint: str | None = None,
     speed_mps: float = 1.0,
@@ -136,9 +182,25 @@ def create_route_animation(
     are already on the timeline), a time, or None (the clip ends with the
     motion). ``foot_lock`` cleans the grounded clip's feet once more on the
     licensed SMPL ``skin``.
+
+    ``end`` sit and lie rest on ``target_object_id``; its footprint and top
+    come from ``geometry_reader(scene)`` (scene_geometry items), and the
+    route must end in front of it. A sit's place (``sit_at``) and facing
+    default to the seat edge nearest the last waypoint; a lie needs the
+    bed's ``head_direction`` (x, z). A fall needs clear floor ahead of the
+    last step. ``support_height_m`` (above the floor) overrides the
+    measured top. Refusals happen before Kimodo runs.
     """
     if end not in END_POSES:
         raise ValueError(f"end must be one of {END_POSES}, not {end!r}")
+    if floor_y is None:
+        first = [float(value) for value in waypoints[0]]
+        floor_y = first[1] if len(first) == 3 else 0.0
+    pose_kwargs, target = plan_end_pose(
+        end, scene, waypoints, target_object_id=target_object_id, sit_at=sit_at,
+        end_heading=end_heading, head_direction=head_direction,
+        support_height_m=support_height_m, floor_y=float(floor_y),
+        geometry_reader=geometry_reader)
     begin = float(start_time or 0.0)
     until = _rest_until(scene, rest_until_s)
     text = _prompt(end, prompt, style_hint)
@@ -155,10 +217,10 @@ def create_route_animation(
     made = create_humanoid_path_animation(
         scene=scene, project_dir=project_dir, prompt=text, waypoints=waypoints,
         floor_y=floor_y, speed_mps=speed_mps, start_hold_s=start_hold_s, end_hold_s=hold,
-        end_heading=end_heading, max_duration_s=max_motion_s, seed=int(seed), device=device,
+        max_duration_s=max_motion_s, seed=int(seed), device=device,
         output_name=output_name, body_name=body_name, start_time=start_time,
         body_validator=body_validator, generator=generator, skin=skin,
-        prepare_motion=prepare, **path_kwargs)
+        prepare_motion=prepare, **pose_kwargs, **path_kwargs)
     animation = made.animation
     held = 0.0
     if until is not None:
@@ -175,7 +237,221 @@ def create_route_animation(
                                     float(animation.start_time)),
         attempts=[{"seed": int(seed), "status": "kept"}],
         end_pose=made.end_pose_grounding,
+        target=target,
     )
+
+
+def plan_end_pose(end: str, scene: Any, waypoints: Sequence[Sequence[float]], *,
+                  target_object_id: str | None = None, sit_at: Sequence[float] | None = None,
+                  end_heading: float | None = None, head_direction: Sequence[float] | None = None,
+                  support_height_m: float | None = None, floor_y: float = 0.0,
+                  geometry_reader: Callable[[Any], Sequence[dict[str, Any]]] | None = None,
+                  ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """``(create_humanoid_path_animation kwargs, target report)`` for ``end``
+    (:func:`create_route_animation`), or :class:`RouteTargetUnsupported` /
+    :class:`FallZoneBlocked`."""
+    from .kimodo_path import _ground_points, heading_from_direction
+    from .kimodo_poses import (BACK_REGION_JOINTS, SEAT_REGION_JOINTS, EndPose,
+                               supine_pelvis, upright_pelvis)
+
+    points = _ground_points(waypoints)
+    last = points[-1]
+    if end == "stand":
+        return {"end_heading": end_heading}, None
+    geometry = list(geometry_reader(scene)) if geometry_reader is not None else None
+    if end == "fall":
+        zone = _fall_zone(points, geometry, floor_y)
+        return ({"end_heading": None,
+                 "end_pose": EndPose(kind="fall", support_height=0.0, region_joints=None)},
+                {"fall_zone": zone})
+    if not target_object_id:
+        raise RouteTargetUnsupported(f"{end} needs target_object_id (the {_support_word(end)})")
+    item = _target_item(geometry, str(target_object_id))
+    rect = _footprint(item)
+    x0, z0, x1, z1 = rect
+    if x0 < last[0] < x1 and z0 < last[1] < z1:
+        raise RouteTargetUnsupported(
+            f"the route ends inside {target_object_id}; end it on the floor in front of it")
+    report: dict[str, Any] = {"object_id": str(target_object_id)}
+    if end == "sit":
+        edge = np.array([min(max(last[0], x0), x1), min(max(last[1], z0), z1)])
+        gap = float(np.linalg.norm(last - edge))
+        if gap > SEAT_MAX_APPROACH_M:
+            raise RouteTargetUnsupported(
+                f"the route ends {gap:.2f} m from the seat {target_object_id}; end it in front "
+                f"of the seat edge (within {SEAT_MAX_APPROACH_M} m)")
+        if sit_at is None:
+            front = (last - edge) / max(gap, 1e-9)
+            inward = min(SEAT_SIT_DEPTH_M, _depth(rect, edge, -front))
+            seat = edge - front * inward
+        else:
+            seat = _ground_points([last, sit_at])[1]
+        if end_heading is None:
+            end_heading = heading_from_direction(last - seat)
+        height, source = _support_height(item, seat, support_height_m, floor_y)
+        if height > SEAT_MAX_HEIGHT_M:
+            raise RouteTargetUnsupported(
+                f"the seat {target_object_id} is {height:.2f} m high, too high for the feet to "
+                f"reach the floor (at most {SEAT_MAX_HEIGHT_M} m)")
+        pose = EndPose(kind="sit", hips=(float(seat[0]), height + SIT_PELVIS_ABOVE_SEAT_M,
+                                         float(seat[1])),
+                       rotvec=tuple(upright_pelvis(end_heading)), hold_s=POSE_PIN_S,
+                       support_height=height, region_joints=SEAT_REGION_JOINTS,
+                       support_rect=rect, plant_feet=True)
+        report.update(support_height_m=round(height, 4), height_source=source,
+                      support_rect=[round(value, 4) for value in rect],
+                      sit_at=[round(float(value), 4) for value in seat],
+                      end_heading=float(end_heading))
+        return ({"end_pose": pose, "sit_at": tuple(float(value) for value in seat),
+                 "end_heading": float(end_heading), "sit_support_ids": [str(target_object_id)],
+                 "max_seat_penetration_m": SEAT_SUPPORT_PENETRATION_M}, report)
+    # end == "lie"
+    if head_direction is None:
+        raise RouteTargetUnsupported(
+            "lie needs head_direction (x, z): the way the bed's head end points from its centre")
+    head = np.asarray([float(value) for value in head_direction][:2], dtype=np.float64)
+    if not np.isfinite(head).all() or np.linalg.norm(head) < 1e-9:
+        raise RouteTargetUnsupported("head_direction must be a non-zero (x, z) direction")
+    head = head / np.linalg.norm(head)
+    centre = np.array([(x0 + x1) / 2.0, (z0 + z1) / 2.0])
+    head_end = centre + head * _depth(rect, centre, head)
+    pelvis = head_end - head * LIE_PELVIS_FROM_HEAD_M
+    height, source = _support_height(item, pelvis, support_height_m, floor_y)
+    pose = EndPose(kind="lie", hips=(float(pelvis[0]), height + LIE_PELVIS_ABOVE_TOP_M,
+                                     float(pelvis[1])),
+                   rotvec=tuple(supine_pelvis(head)), hold_s=POSE_PIN_S,
+                   support_height=height, region_joints=BACK_REGION_JOINTS, support_rect=rect)
+    report.update(support_height_m=round(height, 4), height_source=source,
+                  support_rect=[round(value, 4) for value in rect],
+                  pelvis=[round(float(value), 4) for value in pelvis],
+                  head_direction=[float(value) for value in head])
+    return ({"end_pose": pose, "end_heading": None, "sit_support_ids": [str(target_object_id)],
+             "max_seat_penetration_m": BED_SUPPORT_PENETRATION_M}, report)
+
+
+def _support_word(end: str) -> str:
+    return {"sit": "seat", "lie": "bed"}.get(end, "support")
+
+
+def _target_item(geometry, target: str) -> dict[str, Any]:
+    if geometry is None:
+        raise RouteTargetUnsupported(
+            f"no scene geometry reader to measure {target}; sit and lie need the target's shape")
+    for item in geometry:
+        if str(item.get("object_id")) == target:
+            return item
+    raise RouteTargetUnsupported(f"the target {target} has no geometry in the scene")
+
+
+def _footprint(item) -> tuple[float, float, float, float]:
+    points = np.asarray(item.get("points") or item.get("vertices") or (), dtype=np.float64)
+    if points.ndim != 2 or points.shape[1] != 3 or not len(points):
+        raise RouteTargetUnsupported(f"the target {item.get('object_id')} has no bounds")
+    return (float(points[:, 0].min()), float(points[:, 2].min()),
+            float(points[:, 0].max()), float(points[:, 2].max()))
+
+
+def _depth(rect, point, direction) -> float:
+    """How far from ``point`` along ``direction`` (x, z) the footprint ``rect`` reaches."""
+    x0, z0, x1, z1 = rect
+    reach = math.inf
+    for value, low, high, step in ((point[0], x0, x1, direction[0]),
+                                   (point[1], z0, z1, direction[1])):
+        if step > 1e-9:
+            reach = min(reach, (high - value) / step)
+        elif step < -1e-9:
+            reach = min(reach, (low - value) / step)
+    return max(0.0, float(reach)) if math.isfinite(reach) else 0.0
+
+
+def _support_height(item, xz, explicit, floor_y) -> tuple[float, str]:
+    """The support's top over the floor at ``xz``: ``explicit``, else the
+    median top of its triangles round ``xz`` (a ray straight down), else its
+    bounds top."""
+    if explicit is not None:
+        return float(explicit), "given"
+    tops = mesh_top_heights(item, xz)
+    if tops:
+        return float(np.median(tops)) - floor_y, "mesh_top"
+    points = np.asarray(item.get("points") or (), dtype=np.float64)
+    return float(points[:, 1].max()) - floor_y, "bounds_top"
+
+
+def mesh_top_heights(item, xz, *, half=TOP_SAMPLE_HALF_M, points=TOP_SAMPLE_POINTS) -> list[float]:
+    """The tops of ``item``'s triangles straight under a small grid round
+    ``xz``, where a triangle is hit (roomgen's measured seat height can sit
+    under the mesh: bench_7107's bed said 0.35 m, its mattress edge 0.385 m)."""
+    vertices = np.asarray(item.get("vertices") or (), dtype=np.float64)
+    faces = np.asarray(item.get("faces") or (), dtype=np.int64)
+    if not len(vertices) or not len(faces):
+        return []
+    triangles = vertices[faces]
+    a, b, c = triangles[:, 0], triangles[:, 1], triangles[:, 2]
+    normal = np.cross(b - a, c - a)
+    usable = np.abs(normal[:, 1]) > 1e-9
+    tops = []
+    for dx in np.linspace(-half, half, points):
+        for dz in np.linspace(-half, half, points):
+            x, z = float(xz[0]) + dx, float(xz[1]) + dz
+
+            def side(p, q):
+                return (q[:, 0] - p[:, 0]) * (z - p[:, 2]) - (q[:, 2] - p[:, 2]) * (x - p[:, 0])
+
+            d1, d2, d3 = side(a, b), side(b, c), side(c, a)
+            inside = usable & (((d1 >= 0) & (d2 >= 0) & (d3 >= 0))
+                               | ((d1 <= 0) & (d2 <= 0) & (d3 <= 0)))
+            if inside.any():
+                n, p = normal[inside], a[inside]
+                heights = p[:, 1] - (n[:, 0] * (x - p[:, 0]) + n[:, 2] * (z - p[:, 2])) / n[:, 1]
+                tops.append(float(heights.max()))
+    return tops
+
+
+def _fall_zone(points: np.ndarray, geometry, floor_y: float) -> dict[str, Any]:
+    """The floor :data:`FALL_REACH_M` ahead of the last step, as wide as the
+    body, must be clear of everything standing on it."""
+    zone = {"reach_m": FALL_REACH_M, "body_radius_m": FALL_BODY_RADIUS_M}
+    if geometry is None:
+        return {"status": "unchecked", **zone}
+    legs = np.diff(points, axis=0)
+    moving = np.flatnonzero(np.linalg.norm(legs, axis=1) > 1e-6)
+    direction = legs[moving[-1]] / np.linalg.norm(legs[moving[-1]])
+    start = points[-1]
+    stop = start + direction * FALL_REACH_M
+    blockers = []
+    for item in geometry:
+        corners = np.asarray(item.get("points") or (), dtype=np.float64)
+        if corners.ndim != 2 or corners.shape[1] != 3 or not len(corners):
+            continue
+        if float(corners[:, 1].max()) <= floor_y + FLOOR_ITEM_M:
+            continue
+        low, high = corners.min(axis=0), corners.max(axis=0)
+        if _segment_hits_box(start, stop, (low[0], low[2]), (high[0], high[2]), FALL_BODY_RADIUS_M):
+            blockers.append({"object_id": str(item.get("object_id")),
+                             "name": str(item.get("name") or item.get("object_id")),
+                             "bounds_min": low.tolist(), "bounds_max": high.tolist()})
+    if blockers:
+        raise FallZoneBlocked(blockers)
+    return {"status": "clear", **zone}
+
+
+def _segment_hits_box(start, stop, low, high, radius) -> bool:
+    """Whether the segment comes within ``radius`` of the (x, z) box (the box
+    grown by ``radius``, a conservative square corner)."""
+    t_min, t_max = 0.0, 1.0
+    delta = stop - start
+    for axis in (0, 1):
+        minimum, maximum = low[axis] - radius, high[axis] + radius
+        if abs(float(delta[axis])) <= 1e-12:
+            if not minimum <= start[axis] <= maximum:
+                return False
+            continue
+        enter, leave = sorted(((minimum - start[axis]) / delta[axis],
+                               (maximum - start[axis]) / delta[axis]))
+        t_min, t_max = max(t_min, enter), min(t_max, leave)
+        if t_min > t_max:
+            return False
+    return True
 
 
 def _prompt(end: str, prompt: str | None, style_hint: str | None) -> str:

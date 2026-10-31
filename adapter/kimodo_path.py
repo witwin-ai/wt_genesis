@@ -145,8 +145,11 @@ class RootPathPlan:
             "end_heading": self.end_heading,
             "sit_at": None if self.sit_at is None else list(self.sit_at),
             "end_pose": None if self.end_pose is None else {
-                "kind": self.end_pose.kind, "hips": list(self.end_pose.hips),
-                "rotvec": list(self.end_pose.rotvec), "hold_s": self.end_pose.hold_s},
+                "kind": self.end_pose.kind,
+                # A fall is left to Kimodo: no pelvis pin.
+                "hips": None if self.end_pose.hips is None else list(self.end_pose.hips),
+                "rotvec": None if self.end_pose.rotvec is None else list(self.end_pose.rotvec),
+                "hold_s": self.end_pose.hold_s},
         }
 
 
