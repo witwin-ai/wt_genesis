@@ -266,3 +266,69 @@ def test_a_fall_needs_clear_floor_ahead_of_the_last_step(tmp_path, monkeypatch):
     assert result.to_dict()["target"]["fall_zone"] == {
         "status": "clear", "reach_m": 1.8, "body_radius_m": 0.3}
     assert _pins(calls) == []  # a fall is left to Kimodo after the walk
+
+
+def _people(scene):
+    return [oid for oid in scene.objects
+            if str(oid).startswith("genesis_smpl_body") and "-bone-" not in str(oid)]
+
+
+def _seeded(follow_seeds, wobble=0.2):
+    """A stand-in for Kimodo that strays off the route unless the seed is in
+    ``follow_seeds``."""
+    def generate(prompts, *, seed, **kwargs):
+        made = _route_following_generator([], wobble=0.0 if seed in follow_seeds else wobble)
+        return made(prompts, seed=seed, **kwargs)
+
+    return generate
+
+
+def test_a_take_that_strays_is_dropped_and_the_next_seed_is_kept(tmp_path, monkeypatch):
+    from wt_genesis.adapter.route_animation import create_route_animation
+
+    scene = _scene_with_tiny_skin(monkeypatch)
+    result = create_route_animation(
+        scene=scene, project_dir=tmp_path, waypoints=ROUTE, speed_mps=1.0, rest_until_s=None,
+        foot_lock=False, seed=10, attempts=2, generator=_seeded({11}))
+
+    assert [row["seed"] for row in result.attempts] == [10, 11]
+    assert result.attempts[0]["status"] == "rejected"
+    assert "strays" in result.attempts[0]["reason"]
+    assert result.attempts[1] == {"seed": 11, "status": "kept"}
+    assert _people(scene) == [result.body_object_id]
+    # The dropped take's objects and tracks are gone with it.
+    assert {str(track.object_id) for track in scene.timeline_manager.clip.tracks.values()}         <= set(scene.objects)
+
+
+def test_when_every_take_is_refused_the_scene_is_left_as_it_was(tmp_path, monkeypatch):
+    from wt_genesis.adapter.route_animation import RouteGenerationRejected, create_route_animation
+
+    scene = _scene_with_tiny_skin(monkeypatch)
+    before = set(scene.objects)
+    with pytest.raises(RouteGenerationRejected) as refused:
+        create_route_animation(
+            scene=scene, project_dir=tmp_path, waypoints=ROUTE, speed_mps=1.0,
+            rest_until_s=None, foot_lock=False, attempts=2, generator=_seeded(set()))
+
+    assert [row["status"] for row in refused.value.attempts] == ["rejected", "rejected"]
+    assert set(scene.objects) == before
+    timeline = getattr(scene, "timeline_manager", None)
+    assert timeline is None or not timeline.clip.tracks
+
+
+def test_generation_refusals_name_what_a_reviewer_would_reject():
+    from wt_genesis.adapter.route_animation import generation_refusal
+
+    walk = {"max_root_speed_mps": 1.1, "timed_max_error_m": 0.04}
+    assert generation_refusal(walk, None, None, "stand") is None
+    assert "m/s" in generation_refusal({**walk, "max_root_speed_mps": 11.0}, None, None, "stand")
+    assert "strays" in generation_refusal({**walk, "timed_max_error_m": 0.3}, None, None, "stand")
+    rising = {"samples": [{"y": 0.92}, {"y": 1.2}]}
+    assert "rises" in generation_refusal(walk, rising, None, "stand")
+    dropping = {"samples": [{"y": 0.92}, {"y": 0.5}]}
+    assert "drops" in generation_refusal(walk, dropping, None, "stand")
+    assert generation_refusal(walk, dropping, None, "fall") is None
+    over = {"kind": "sit", "rest_support_gap_m": 0.05, "rest_feet_lowest_m": 0.0}
+    assert "over its support" in generation_refusal(walk, None, over, "sit")
+    feet = {"kind": "sit", "rest_support_gap_m": 0.0, "rest_feet_lowest_m": 0.04}
+    assert "feet" in generation_refusal(walk, None, feet, "sit")

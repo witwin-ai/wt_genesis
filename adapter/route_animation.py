@@ -32,6 +32,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from .kimodo_path import PathAnimationResult, create_humanoid_path_animation
+from .trajectory_clearance import HumanoidTrajectoryBlocked
 
 #: How a route can end.
 END_POSES = ("stand", "sit", "lie", "fall")
@@ -52,6 +53,17 @@ PIVOT_TOLERANCE_M = 2e-3
 #: A pose is settled once the root stays this close to its final height.
 SETTLED_M = 0.03
 CONTACT_EVENTS = {"sit": "seat_contact", "lie": "back_contact", "fall": "impact"}
+#: Takes are refused (and the next seed tried) past these, as in the
+#: meeting bench: the fastest root step, the route error while walking, a
+#: root rising (or, walking, dropping) from where it stood, a settled pose
+#: off its support, a seated person's soles off the floor.
+MAX_ROOT_SPEED_MPS = 3.0
+MAX_PATH_ERROR_M = 0.15
+MAX_ROOT_RISE_M = 0.15
+END_POSE_SUPPORT_TOLERANCE_M = 0.02
+SEATED_FEET_TOLERANCE_M = 0.025
+#: Kimodo takes per route (each with the next seed).
+ATTEMPTS = 2
 
 #: Where a seated pelvis is pinned over the seat top (SOMA -> SMPL: at 0.13 m
 #: the buttocks came 5-10 cm low), and how far it sits in from the front edge.
@@ -86,6 +98,15 @@ class RouteBackendUnavailable(RuntimeError):
 
 class RouteTargetUnsupported(ValueError):
     """The end pose cannot be placed on the requested target from this route."""
+
+
+class RouteGenerationRejected(RuntimeError):
+    """Every Kimodo take was refused (:func:`generation_refusal`)."""
+
+    def __init__(self, attempts: list[dict[str, Any]]):
+        self.attempts = attempts
+        reasons = "; ".join(f"seed {row['seed']}: {row.get('reason')}" for row in attempts)
+        super().__init__(f"no kept take after {len(attempts)} attempt(s): {reasons}")
 
 
 class FallZoneBlocked(ValueError):
@@ -164,6 +185,7 @@ def create_route_animation(
     rest_style: str = "lively",
     foot_lock: bool = True,
     max_motion_s: float = MAX_MOTION_S,
+    attempts: int = ATTEMPTS,
     seed: int = 10,
     device: int = 0,
     output_name: str | None = None,
@@ -190,6 +212,11 @@ def create_route_animation(
     bed's ``head_direction`` (x, z). A fall needs clear floor ahead of the
     last step. ``support_height_m`` (above the floor) overrides the
     measured top. Refusals happen before Kimodo runs.
+
+    Up to ``attempts`` takes run, with seed ``seed``, ``seed + 1``, ...; a
+    take :func:`generation_refusal` refuses (or whose body is blocked) is
+    removed from the scene before the next. Every take is listed in the
+    result's ``attempts``, or in :class:`RouteGenerationRejected`'s.
     """
     if end not in END_POSES:
         raise ValueError(f"end must be one of {END_POSES}, not {end!r}")
@@ -205,22 +232,61 @@ def create_route_animation(
     until = _rest_until(scene, rest_until_s)
     text = _prompt(end, prompt, style_hint)
     hold = float(END_HOLD_S[end] if end_hold_s is None else end_hold_s)
+    if int(attempts) < 1:
+        raise ValueError("attempts must be at least 1")
+    rows: list[dict[str, Any]] = []
+    failure: Exception | None = None
+    for attempt in range(int(attempts)):
+        take_seed = int(seed) + attempt
+        before = set(getattr(scene, "objects", {}) or {})
+        timeline = getattr(scene, "timeline_manager", None)
+        duration = float(timeline.duration) if timeline is not None else None
+        try:
+            made = _take(
+                scene, take_seed, end=end, begin=begin, until=until, rest_style=rest_style,
+                foot_lock=foot_lock, skin=skin, project_dir=project_dir, prompt=text,
+                waypoints=waypoints, floor_y=floor_y, speed_mps=speed_mps,
+                start_hold_s=start_hold_s, end_hold_s=hold, max_duration_s=max_motion_s,
+                device=device,
+                output_name=None if output_name is None else f"{output_name}_{attempt}",
+                body_name=body_name, start_time=start_time, body_validator=body_validator,
+                generator=generator, **pose_kwargs, **path_kwargs)
+        except HumanoidTrajectoryBlocked as error:
+            _remove_new_objects(scene, before, duration)
+            rows.append({"seed": take_seed, "status": "blocked", "reason": str(error)})
+            failure = error
+            continue
+        reason = generation_refusal(made.path.path_following, made.path.occupancy,
+                                    made.path.end_pose_grounding, end)
+        if reason is None and made.binding.get("pivot") == "not_pivoted":
+            reason = ("the baked root does not turn about the SMPL pelvis "
+                      f"({made.binding['max_error_m']} m off)")
+        if reason is not None:
+            _remove_new_objects(scene, before, duration)
+            rows.append({"seed": take_seed, "status": "rejected", "reason": reason})
+            failure = None
+            continue
+        rows.append({"seed": take_seed, "status": "kept"})
+        return replace(made, attempts=rows, target=target)
+    if isinstance(failure, HumanoidTrajectoryBlocked):
+        failure.attempts = rows
+        raise failure
+    raise RouteGenerationRejected(rows)
+
+
+def _take(scene, seed, *, end, begin, until, rest_style, foot_lock, skin, **kwargs):
+    """One Kimodo take: generate, clean the feet, rest, bind (no refusal)."""
     reports: dict[str, Any] = {}
 
     def prepare(motion_asset, plan):
         reports["foot_lock"] = _clean_feet(motion_asset, skin) if foot_lock else None
         reports["settled"] = _settled_after(motion_asset, plan) if end != "stand" else None
-        motion_asset, frames = _rest_to(motion_asset, begin, until, seed=int(seed), style=rest_style)
+        motion_asset, frames = _rest_to(motion_asset, begin, until, seed=seed, style=rest_style)
         reports["rest_frames"] = frames
         return motion_asset
 
-    made = create_humanoid_path_animation(
-        scene=scene, project_dir=project_dir, prompt=text, waypoints=waypoints,
-        floor_y=floor_y, speed_mps=speed_mps, start_hold_s=start_hold_s, end_hold_s=hold,
-        max_duration_s=max_motion_s, seed=int(seed), device=device,
-        output_name=output_name, body_name=body_name, start_time=start_time,
-        body_validator=body_validator, generator=generator, skin=skin,
-        prepare_motion=prepare, **pose_kwargs, **path_kwargs)
+    made = create_humanoid_path_animation(scene=scene, seed=seed, skin=skin,
+                                          prepare_motion=prepare, **kwargs)
     animation = made.animation
     held = 0.0
     if until is not None:
@@ -235,10 +301,54 @@ def create_route_animation(
         foot_lock=reports.get("foot_lock"),
         binding=pivot_binding_check(scene, animation.body_object_id, animation.motion_asset,
                                     float(animation.start_time)),
-        attempts=[{"seed": int(seed), "status": "kept"}],
         end_pose=made.end_pose_grounding,
-        target=target,
     )
+
+
+def generation_refusal(following: dict[str, Any], occupancy: dict[str, Any] | None,
+                       grounding: dict[str, Any] | None, end: str) -> str | None:
+    """Why a generated take cannot be kept, or None: the root jumps (Kimodo
+    past ~12 s: 11 m/s), strays from the route, floats up or sinks while
+    walking, or the settled pose is off its support (the meeting bench's
+    refusals)."""
+    speed = float(following.get("max_root_speed_mps") or 0.0)
+    if speed > MAX_ROOT_SPEED_MPS:
+        return f"motion glitch: root moves at {speed:.1f} m/s"
+    error = float(following.get("timed_max_error_m") or 0.0)
+    if error > MAX_PATH_ERROR_M:
+        return f"strays {error:.2f} m from the planned route"
+    heights = [float(sample["y"]) for sample in (occupancy or {}).get("samples") or ()]
+    if heights:
+        rise = max(heights) - heights[0]
+        if rise > MAX_ROOT_RISE_M:
+            return f"motion glitch: root rises {rise:.2f} m above where it stood"
+        if end == "stand" and heights[0] - min(heights) > MAX_ROOT_RISE_M:
+            return f"motion glitch: root drops {heights[0] - min(heights):.2f} m while walking"
+    if grounding:
+        gap = grounding.get("rest_support_gap_m")
+        if gap is not None and abs(float(gap)) > END_POSE_SUPPORT_TOLERANCE_M:
+            where = "over" if float(gap) > 0 else "into"
+            return (f"{grounding.get('kind')}: rests {abs(float(gap)) * 100:.1f} cm {where} "
+                    "its support")
+        feet = grounding.get("rest_feet_lowest_m")
+        if grounding.get("kind") == "sit" and feet is not None \
+                and float(feet) > SEATED_FEET_TOLERANCE_M:
+            return f"sit: feet {float(feet) * 100:.1f} cm off the floor"
+    return None
+
+
+def _remove_new_objects(scene, before, duration) -> None:
+    """Take a refused take's objects and their tracks out of the scene."""
+    added = set(getattr(scene, "objects", {}) or {}) - set(before)
+    timeline = getattr(scene, "timeline_manager", None)
+    if timeline is not None:
+        for object_id in added:
+            timeline.remove_object_tracks(object_id)
+        if duration is not None:
+            timeline.duration = duration
+    for object_id in added:
+        if object_id in scene.objects:
+            scene.remove_object(object_id)
 
 
 def plan_end_pose(end: str, scene: Any, waypoints: Sequence[Sequence[float]], *,
