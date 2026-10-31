@@ -17,6 +17,11 @@ from witwin_server.utils.logging import get_logger
 from witwin.genesis.assets import inspect_runtime
 from witwin.genesis.motion_export import Backend, generate_motion_asset
 from .adapter.kimodo_backend import configured_backend, configured_backend_name, inspect_kimodo_runtime
+from .adapter.kimodo_path import heading_from_direction
+from .adapter.route_animation import (
+    END_POSES, MAX_MOTION_S, FallZoneBlocked, RouteBackendUnavailable, RouteGenerationRejected,
+    RouteTargetUnsupported, create_route_animation, require_route_backend,
+)
 from .adapter.scene_animation import create_humanoid_animation
 from .adapter.trajectory_clearance import HumanoidTrajectoryBlocked
 
@@ -155,6 +160,290 @@ _ANIMATION_INPUT_SCHEMA = {
     "required": ["prompt"],
     "additionalProperties": False,
 }
+
+_ROUTE_RETRIEVAL_TAGS = (
+    "pack:witwin.scene",
+    "word-intent:person",
+    "hint-term:walk to",
+    "hint-term:sit on",
+    "hint-term:lie on the bed",
+    "hint-term:falls down",
+    "hint-explicit-intent:person walks to the sofa",
+    "hint-explicit-intent:person sits on the bed",
+    "hint-explicit-intent:走到沙发坐下",
+    "hint-requires-pack",
+)
+
+_ROUTE_DESCRIPTION = (
+    "Generate a person (Kimodo) who walks a planned floor route and ends in a pose: stand, sit on a "
+    "seat, lie on a bed, or fall to the floor. "
+    "When: the person must go somewhere in the room or end on furniture, e.g. 'walk to the sofa "
+    "and sit'. Give the route as floor waypoints [x, z] (or [x, y, z]) from start to the stop in "
+    "front of the target; the route is followed with root constraints, not described in text. "
+    "Preconditions: the Kimodo backend (on MDM the tool refuses with kimodo_backend_required); "
+    "sit and lie need target_object_id, a seat or bed in the scene, and the route ending on the "
+    "floor in front of it; lie needs head_direction; fall needs 1.8 m of clear floor ahead of the "
+    "last step. "
+    "Result: the body, its interval, route following error, key event times (arrival, "
+    "seat/back contact, impact), the end pose's rest on its support, the foot clean-up, the rest "
+    "idle to the clip end and every Kimodo take. "
+    "Limits: one adult SMPL body, at most 10 s of motion before the rest idle, no stairs, no "
+    "carried objects, no hand contact; prompts and style_hint change style, never the path."
+)
+
+_POINT = {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 3}
+
+_ROUTE_INPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "scene_id": {
+            "type": "string", "minLength": 1,
+            "description": "Exact already-open target scene. A missing scene never falls back to another room.",
+        },
+        "waypoints": {
+            "type": "array", "items": _POINT, "minItems": 2,
+            "description": "Floor route in scene metres, start first: [x, z] or [x, y, z] points (y is "
+                           "the floor height). The last point is where the walk stops (in front of "
+                           "the seat or bed for sit and lie).",
+        },
+        "end": {
+            "type": "string", "enum": list(END_POSES), "default": "stand",
+            "description": "How the route ends: stand, sit (on target_object_id), lie (on the bed "
+                           "target_object_id) or fall (to the floor ahead of the last step).",
+        },
+        "target_object_id": {
+            "type": "string", "minLength": 1,
+            "description": "Scene object the person sits or lies on (required for sit and lie).",
+        },
+        "sit_at": {
+            **_POINT, "maxItems": 2,
+            "description": "Optional sit point [x, z] on the seat; default 0.16 m in from the seat "
+                           "edge nearest the last waypoint.",
+        },
+        "head_direction": {
+            **_POINT, "maxItems": 2,
+            "description": "For lie: direction [x, z] from the bed's centre to its head end.",
+        },
+        "support_height_m": {
+            "type": "number", "minimum": 0.0, "maximum": 1.5,
+            "description": "Optional seat or mattress top above the floor in metres; default "
+                           "measured on the target's mesh.",
+        },
+        "end_facing": {
+            **_POINT, "maxItems": 2,
+            "description": "Optional direction [x, z] a standing person faces at the end (a sit "
+                           "faces out of the seat by default).",
+        },
+        "prompt": {
+            "type": "string", "minLength": 1,
+            "description": "Optional one-sentence motion text; default chosen for the end pose.",
+        },
+        "style_hint": {
+            "type": "string", "minLength": 1,
+            "description": "Optional style appended to the prompt, e.g. 'casually, hands relaxed'.",
+        },
+        "speed_mps": {
+            "type": "number", "exclusiveMinimum": 0.0, "maximum": 3.0, "default": 1.0,
+            "description": "Walking speed in m/s. Default 1.0.",
+        },
+        "start_hold_s": {
+            "type": "number", "minimum": 0.0, "maximum": 5.0, "default": 0.5,
+            "description": "Seconds standing at the start before walking. Default 0.5.",
+        },
+        "end_hold_s": {
+            "type": "number", "minimum": 0.0, "maximum": 6.0,
+            "description": "Seconds of motion after arriving (to turn and sit, lie down, fall); "
+                           "default 1.5 stand, 3 sit, 5 lie, 3 fall.",
+        },
+        "start_time": {
+            "type": "number", "minimum": 0.0,
+            "description": "Timeline time in seconds when the person starts. Default 0.",
+        },
+        "rest_to_clip_end": {
+            "type": "boolean", "default": True,
+            "description": "Keep the person resting alive (breathing, looking round; pelvis and legs "
+                           "still) from the motion's end to the scene's clip end. Default true.",
+        },
+        "rest_until_s": {
+            "type": "number", "minimum": 0.0,
+            "description": "Optional timeline time to rest until, instead of the clip end.",
+        },
+        "max_motion_s": {
+            "type": "number", "exclusiveMinimum": 0.0, "maximum": MAX_MOTION_S,
+            "default": MAX_MOTION_S,
+            "description": "Longest generated motion in seconds (walk plus end hold). Default 10.",
+        },
+        "seed": {"type": "integer", "description": "Kimodo seed of the first take. Default 10."},
+        "attempts": {
+            "type": "integer", "minimum": 1, "maximum": 4, "default": 2,
+            "description": "Kimodo takes tried (seed, seed + 1, ...) until one passes the take "
+                           "checks. Default 2.",
+        },
+        "body_name": {"type": "string", "description": "Optional scene object name for the body."},
+        "output_name": {"type": "string",
+                        "description": "Optional filename stem for the generated .npz asset."},
+    },
+    "required": ["waypoints"],
+    "additionalProperties": False,
+}
+
+
+def make_generate_humanoid_route_animation_tool(
+    ctx: Any, *, generator: Any = None, geometry_reader: Any = None, skin: Any = None,
+    foot_lock: bool = True, body_validator: Any = None,
+) -> Tool:
+    @tool(
+        name="generate_humanoid_route_animation",
+        description=_ROUTE_DESCRIPTION,
+        input_schema=_ROUTE_INPUT_SCHEMA,
+        output_schema={"type": "object"},
+        side_effects=True,
+        requires_confirmation=True,
+        permission_scope="genesis.generate_scene_animation",
+        permission_tier="execute",
+        timeout=1800.0,
+        tags=_ROUTE_RETRIEVAL_TAGS,
+    )
+    async def generate_humanoid_route_animation(args: dict[str, Any]) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            _run_route_animation, ctx, args, generator=generator,
+            geometry_reader=geometry_reader, skin=skin, foot_lock=foot_lock,
+            body_validator=body_validator)
+
+    return generate_humanoid_route_animation
+
+
+def _run_route_animation(ctx: Any, args: dict[str, Any], *, generator: Any, geometry_reader: Any,
+                         skin: Any, foot_lock: bool, body_validator: Any) -> dict[str, Any]:
+    backend = _active_backend_name()
+    try:
+        require_route_backend(backend)
+    except RouteBackendUnavailable as exc:
+        raise ToolError(str(exc), code="kimodo_backend_required",
+                        detail={"active_backend": backend,
+                                "in_place_tool": "generate_humanoid_animation"}) from exc
+    scene = _get_scene(ctx, args.get("scene_id"))
+    if scene is None:
+        raise ToolError("no active scene", code="no_scene")
+    server = _get_server(ctx)
+    rest_until: Any = "clip_end" if args.get("rest_to_clip_end", True) else None
+    if "rest_until_s" in args:
+        rest_until = float(args["rest_until_s"])
+    end_heading = None
+    if args.get("end_facing") is not None:
+        try:
+            end_heading = heading_from_direction(args["end_facing"])
+        except ValueError as exc:
+            raise ToolError(str(exc), code="invalid_route") from exc
+    try:
+        result = create_route_animation(
+            scene=scene,
+            project_dir=default_project_dir(),
+            waypoints=args["waypoints"],
+            end=str(args.get("end", "stand")),
+            target_object_id=args.get("target_object_id"),
+            sit_at=args.get("sit_at"),
+            head_direction=args.get("head_direction"),
+            support_height_m=args.get("support_height_m"),
+            geometry_reader=geometry_reader or _motion_matching_geometry_reader(),
+            prompt=args.get("prompt"),
+            style_hint=args.get("style_hint"),
+            speed_mps=float(args.get("speed_mps", 1.0)),
+            start_hold_s=float(args.get("start_hold_s", 0.5)),
+            end_hold_s=(float(args["end_hold_s"]) if "end_hold_s" in args else None),
+            end_heading=end_heading,
+            rest_until_s=rest_until,
+            foot_lock=foot_lock,
+            max_motion_s=float(args.get("max_motion_s", MAX_MOTION_S)),
+            attempts=int(args.get("attempts", 2)),
+            seed=int(args.get("seed", 10)),
+            output_name=args.get("output_name"),
+            body_name=args.get("body_name"),
+            start_time=(float(args["start_time"]) if "start_time" in args else None),
+            body_validator=body_validator or _motion_matching_route_body_validation,
+            generator=generator,
+            skin=skin,
+            mesh_assets=getattr(server, "mesh_assets", None),
+            broadcast=_get_broadcast_for_server(server),
+            serialize_object=_get_serializer(server, scene),
+        )
+    except RouteTargetUnsupported as exc:
+        raise ToolError(str(exc), code="route_target_unsupported") from exc
+    except FallZoneBlocked as exc:
+        raise ToolError(str(exc), code="fall_zone_blocked", detail={"blockers": exc.blockers}) from exc
+    except HumanoidTrajectoryBlocked as exc:
+        raise ToolError(str(exc), code="humanoid_trajectory_blocked",
+                        detail={"blockers": exc.blockers,
+                                "attempts": getattr(exc, "attempts", None)}) from exc
+    except RouteGenerationRejected as exc:
+        raise ToolError(str(exc), code="humanoid_generation_rejected",
+                        detail={"attempts": exc.attempts}) from exc
+    except ValueError as exc:
+        raise ToolError(str(exc), code="invalid_route") from exc
+    except RuntimeError as exc:
+        if "Kimodo runtime is not ready" not in str(exc):
+            raise
+        raise ToolError(str(exc), code="kimodo_runtime_unavailable") from exc
+    binding = _finalize_scene_animation(server, scene, result.path.animation)
+    payload = result.to_dict()
+    payload["scene_id"] = binding["scene_id"]
+    payload["scene_binding"] = binding["scene_binding"]
+    return payload
+
+
+def _motion_matching_geometry_reader():
+    """Motion Matching's live scene geometry (footprints and mesh tops), or
+    None when it is not installed (sit and lie are then refused)."""
+    try:
+        module = importlib.import_module("witwin_motion_matching.scene_geometry")
+        return getattr(module, "scene_geometry")
+    except (ImportError, AttributeError):
+        return None
+
+
+def _motion_matching_route_body_validation(
+    scene: Any,
+    object_id: str,
+    start_time: float,
+    end_time: float,
+) -> dict[str, Any]:
+    """The final-LBS body check for a route walk, without relocation: moving
+    or turning the whole track would take the person off its route."""
+    try:
+        module = importlib.import_module("witwin_motion_matching.body_collision_service")
+        validate = getattr(module, "body_collision_report")
+    except (ImportError, AttributeError) as exc:
+        raise ToolError(
+            "humanoid body safety requires the Motion Matching collision provider",
+            code="humanoid_clearance_unavailable",
+        ) from exc
+    try:
+        return validate(
+            scene,
+            {
+                "object_id": object_id,
+                "start": float(start_time),
+                "end": float(end_time),
+                "fps": 30.0,
+                "max_samples": 10000,
+                "max_contacts": 200,
+                "tolerance_m": 0.0001,
+                "volume_model": "convex_parts",
+            },
+            default_project_dir(),
+        )
+    except Exception as exc:  # provider exception type is intentionally behind the port
+        if str(exc) != "no exact static environment geometry":
+            raise
+        return {
+            "ok": True,
+            "status": "clear_at_samples",
+            "samples": 0,
+            "affected_samples": 0,
+            "contacts": [],
+            "limitations": ["The scene contained no static obstacle triangles to test."],
+        }
+
 
 def make_check_genesis_runtime_tool(ctx: Any) -> Tool:
     @tool(
@@ -477,6 +766,7 @@ def register(ctx: Any) -> None:
     ctx.tools.register(make_check_genesis_runtime_tool(ctx))
     ctx.tools.register(make_generate_smpl_motion_tool(ctx))
     ctx.tools.register(make_generate_humanoid_animation_tool(ctx))
+    ctx.tools.register(make_generate_humanoid_route_animation_tool(ctx))
     if configured_backend_name() == "mdm_tiny_cached" and os.environ.get("WITWIN_GENESIS_PREWARM", "1") != "0":
         # Load the model in the background so the first request is warm.
         from .adapter.mdm_cached_backend import prewarm
