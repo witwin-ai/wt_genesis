@@ -332,3 +332,33 @@ def test_generation_refusals_name_what_a_reviewer_would_reject():
     assert "over its support" in generation_refusal(walk, None, over, "sit")
     feet = {"kind": "sit", "rest_support_gap_m": 0.0, "rest_feet_lowest_m": 0.04}
     assert "feet" in generation_refusal(walk, None, feet, "sit")
+
+
+def test_a_fall_that_starts_before_arrival_reports_its_real_impact(tmp_path, monkeypatch):
+    # Real 06_fall take: Kimodo tripped while the route still held the root
+    # (down at 3.25 s, arrival 3.45 s); clamping the event to the arrival
+    # put the impact 0.2 s late.
+    from wt_genesis.adapter.route_animation import create_route_animation
+
+    follow = _route_following_generator([])
+    route = [(0.0, 0.0), (2.0, 0.0)]
+    floor = _box("floor", (-1.0, -0.1, -1.0), (6.0, 0.0, 1.0))
+
+    def trip_early(prompts, **kwargs):
+        motion = follow(prompts, **kwargs)
+        frames = motion["smpl_trans"].shape[1]
+        down = frames // 2
+        motion["smpl_trans"][0, down - 4:down, 1] = np.linspace(0.92, 0.3, 4)
+        motion["smpl_trans"][0, down:, 1] = 0.3
+        return motion
+
+    scene = _scene_with_tiny_skin(monkeypatch)
+    result = create_route_animation(
+        scene=scene, project_dir=tmp_path, waypoints=route, end="fall", end_hold_s=3.0,
+        rest_until_s=None, foot_lock=False, skin=_seat_skin(),
+        geometry_reader=lambda _scene: [floor], generator=trip_early)
+
+    events = result.key_events
+    assert events["impact"] < events["arrival"]
+    frames = result.path.animation.motion_asset.frame_count
+    assert events["impact"] == pytest.approx((frames // 2) / 20.0, abs=0.06)

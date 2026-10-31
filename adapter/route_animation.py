@@ -626,14 +626,26 @@ def _clean_feet(motion_asset, skin) -> dict[str, Any] | None:
 
 def _settled_after(motion_asset, plan) -> float | None:
     """Clip time from which the root stays within :data:`SETTLED_M` of its
-    final height (the seat, mattress or floor reached), or None."""
-    with np.load(motion_asset.motion_path) as data:
-        heights = np.asarray(data["root"], dtype=np.float64)[:, 1]
-    fps = float(motion_asset.fps)
-    away = np.flatnonzero(np.abs(heights - heights[-1]) > SETTLED_M)
-    first = int(away[-1]) + 1 if len(away) else 0
-    first = max(first, int(math.ceil(plan.arrival_s * fps - 1e-9)))
-    return first / fps if first < len(heights) else None
+    final height (the seat, mattress or floor reached), or None.
+
+    Measured on Kimodo's clip as made (the ``.ungrounded.npz`` kept beside
+    it): the grounding blends its height correction in over the whole
+    transition. Not clamped to the arrival: a trip can start while the
+    route still holds the root (real 06_fall take: down 0.2 s before it).
+    A clip that never left its final height falls back to the grounded one."""
+    del plan
+    path = Path(motion_asset.motion_path)
+    for source in (Path(str(path).replace(".npz", ".ungrounded.npz")), path):
+        if not source.is_file():
+            continue
+        with np.load(source) as data:
+            heights = np.asarray(data["root"], dtype=np.float64)[:, 1]
+        away = np.flatnonzero(np.abs(heights - heights[-1]) > SETTLED_M)
+        if not len(away):
+            continue  # never left its final height: nothing settled here
+        first = int(away[-1]) + 1
+        return first / float(motion_asset.fps) if first < len(heights) else None
+    return None
 
 
 def _rest_to(motion_asset, begin: float, until: float | None, *, seed: int, style: str):
