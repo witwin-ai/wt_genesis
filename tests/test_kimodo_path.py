@@ -408,3 +408,41 @@ def test_prepare_motion_rewrites_the_clip_before_it_is_bound(tmp_path, monkeypat
     track = scene.timeline_manager.clip.get_track(
         result.animation.body_object_id, "Transform", "position")
     assert max(key.time for key in track.keyframes) == pytest.approx((frames + 9) / 20.0)
+
+
+def test_path_following_measures_the_pelvis_not_the_pivoted_body_origin(tmp_path, monkeypatch):
+    # Since the pelvis-pivot binding (2590eec) the body origin is
+    # translation + J0 - R J0: a person tipping forward into a trip swung
+    # it 0.24-0.28 m off the route while the pelvis Kimodo was constrained
+    # on stayed within 5 cm (real 06_fall takes, 2026-10-30). Path following
+    # and occupancy measure the pelvis-referenced root (key + R J0 - J0).
+    from scipy.spatial.transform import Rotation
+    from witwin_server.core.scene import Scene
+    import wt_genesis.adapter.scene_animation as scene_animation
+    from tests.test_root_pivot import _skin_with_pelvis_offset
+    from wt_genesis.adapter.kimodo_path import create_humanoid_path_animation
+
+    follow = _route_following_generator([])
+
+    def tip_forward(prompts, **kwargs):
+        motion = follow(prompts, **kwargs)
+        frames = motion["smpl_pose"].shape[1]
+        angles = np.linspace(0.0, math.pi / 2, frames)
+        motion["smpl_pose"][0, :, 0] = Rotation.from_euler("x", angles[:, None]).as_rotvec()
+        return motion
+
+    monkeypatch.setattr(scene_animation, "build_smpl_skin_asset",
+                        lambda *args, **kwargs: _skin_with_pelvis_offset())
+    scene = Scene(scene_id="main")
+    result = create_humanoid_path_animation(
+        scene=scene, project_dir=tmp_path, prompt="a person walks", waypoints=ROUTE,
+        speed_mps=1.0, generator=tip_forward)
+
+    track = scene.timeline_manager.clip.get_track(
+        result.animation.body_object_id, "Transform", "position")
+    last = np.asarray(track.keyframes[-1].value)
+    assert np.hypot(last[0] - 3.0, last[2] - 3.5) > 0.15      # the origin swung off
+    assert result.path_following["timed_max_error_m"] < 0.01  # the pelvis did not
+    assert result.path_following["end_error_m"] < 0.01
+    end = result.occupancy["samples"][-1]
+    assert (end["x"], end["z"]) == pytest.approx((3.0, 3.5), abs=0.01)

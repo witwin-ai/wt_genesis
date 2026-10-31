@@ -520,7 +520,37 @@ def _root_keys(scene: Any, body_object_id: str) -> tuple[np.ndarray, np.ndarray]
         raise ValueError(f"humanoid {body_object_id} has no root position track")
     times = np.asarray([float(key.time) for key in track.keyframes], dtype=np.float64)
     values = np.asarray([list(key.value) for key in track.keyframes], dtype=np.float64)
-    return times, values
+    return times, _pelvis_referenced(scene, body_object_id, times, values)
+
+
+def _pelvis_referenced(scene: Any, body_object_id: str, times: np.ndarray,
+                       values: np.ndarray) -> np.ndarray:
+    """Root keys as the clip's translation moves them (``key + R J0 - J0``).
+
+    The pelvis-pivot binding puts the body origin at translation + J0 - R J0
+    (:func:`.scene_animation._pivot_root_on_pelvis`): tipping forward into a
+    fall swings the origin ~0.2 m off the pelvis, which is what Kimodo's
+    root constraints and the route are about. Unchanged without a pelvis
+    bone or a rotation track.
+    """
+    from scipy.spatial.transform import Rotation
+
+    bone = scene.get_object(f"{body_object_id}-smpl-bone-00")
+    rotation = scene.timeline_manager.clip.get_track(body_object_id, "Transform", "rotation")
+    if bone is None or rotation is None or not rotation.keyframes:
+        return values
+    j0 = np.asarray(bone.get_component("Transform").position, dtype=np.float64).reshape(3)
+    if not np.abs(j0).max() > 0.0:
+        return values
+    rotation_times = np.asarray([float(key.time) for key in rotation.keyframes])
+    eulers = [list(key.value) for key in rotation.keyframes]
+    # Position and rotation keys are written together (one key per time).
+    nearest = np.clip(np.searchsorted(rotation_times, times), 0, len(eulers) - 1)
+    before = np.clip(nearest - 1, 0, len(eulers) - 1)
+    pick = np.where(np.abs(rotation_times[before] - times) < np.abs(rotation_times[nearest] - times),
+                    before, nearest)
+    turned = Rotation.from_euler("ZXY", [eulers[index] for index in pick]).apply(j0)
+    return values + turned - j0
 
 
 def path_following_error(scene: Any, body_object_id: str, plan: RootPathPlan, *,
