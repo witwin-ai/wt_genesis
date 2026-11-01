@@ -235,7 +235,6 @@ def test_generate_humanoid_animation_persists_skinned_mesh_for_cold_load(tmp_pat
         def __init__(self, active_scene):
             super().__init__(active_scene)
             self.verbose = False
-            self.scenes = {active_scene.scene_id: active_scene}
             self.persistence = PersistenceManager(self)
 
     server = PersistentServer(scene)

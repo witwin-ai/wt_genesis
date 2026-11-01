@@ -116,7 +116,7 @@ _ANIMATION_INPUT_SCHEMA = {
         **_INPUT_SCHEMA["properties"],
         "scene_id": {
             "type": "string", "minLength": 1,
-            "description": "Exact already-open target scene. A missing scene never falls back to another room.",
+            "description": "Optional. Must be the current scene; any other id is refused, never redirected to another room.",
         },
         "playback_mode": {
             "type": "string", "enum": ["legacy_controller", "baked_transforms"],
@@ -198,7 +198,7 @@ _ROUTE_INPUT_SCHEMA = {
     "properties": {
         "scene_id": {
             "type": "string", "minLength": 1,
-            "description": "Exact already-open target scene. A missing scene never falls back to another room.",
+            "description": "Optional. Must be the current scene; any other id is refused, never redirected to another room.",
         },
         "waypoints": {
             "type": "array", "items": _POINT, "minItems": 2,
@@ -697,25 +697,30 @@ def _inspect_radar_pipeline_runtime() -> dict[str, Any]:
     }
 
 def _get_scene(ctx: Any, scene_id: str | None = None) -> Any:
-    if scene_id is not None:
-        requested = str(scene_id).strip()
-        if not requested:
-            raise ToolError("scene_id must not be empty", code="missing_scene")
-        server = _get_server(ctx)
-        getter = getattr(server, "get_scene", None)
-        if callable(getter):
-            scene = getter(requested)
-        else:
-            current = _get_scene(ctx)
-            scene = current if str(getattr(current, "scene_id", "")) == requested else None
-        if scene is None:
-            raise ToolError(f"scene not found or no longer open: {requested}", code="missing_scene")
-        return scene
+    """The current scene, the only one the ProjectServer has loaded.
+
+    ``scene_id`` is optional. When given it must name the current scene: authoring
+    a person into a different room than the caller meant is worse than failing, and
+    an Agent turn cannot switch scenes itself, so the error says to switch first.
+    """
     api = getattr(ctx, "api", None)
     scene = getattr(api, "scene", None)
-    if scene is not None:
+    if scene is None:
+        scene = getattr(ctx, "scene", None)
+    if scene_id is None:
         return scene
-    return getattr(ctx, "scene", None)
+    requested = str(scene_id).strip()
+    if not requested:
+        raise ToolError("scene_id must not be empty", code="missing_scene")
+    current = str(getattr(scene, "scene_id", "") or "")
+    if requested != current:
+        raise ToolError(
+            f"scene '{requested}' is not the current scene ('{current}'); switch to "
+            f"scene '{requested}' first, or omit scene_id to use the current scene",
+            code="scene_not_current",
+            detail={"scene_id": requested, "current_scene_id": current},
+        )
+    return scene
 
 
 def _get_server(ctx: Any) -> Any:
@@ -748,17 +753,12 @@ def _get_serializer(server: Any, scene: Any):
 
 
 def _save_generated_scene(server: Any, scene: Any) -> None:
+    # _get_scene only returns the current scene, and persistence.save_scene writes
+    # exactly that one.
     persistence = getattr(server, "persistence", None)
-    if persistence is None:
-        return
-    if scene is getattr(server, "scene", None):
-        save_scene = getattr(persistence, "save_scene", None)
-        if callable(save_scene):
-            save_scene(force=True)
-            return
-    save_scene_file = getattr(persistence, "save_scene_file", None)
-    if callable(save_scene_file):
-        save_scene_file(scene)
+    save_scene = getattr(persistence, "save_scene", None)
+    if callable(save_scene) and scene is getattr(server, "scene", None):
+        save_scene(force=True)
 
 
 def register(ctx: Any) -> None:

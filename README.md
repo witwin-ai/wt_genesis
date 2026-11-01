@@ -63,8 +63,10 @@ that boundary explicit. Supply licensed SMPL assets yourself; do not substitute
 dummy files to pass the check. On Windows, an explicit `WITWIN_GENESIS_DATA_DIR`
 set before server startup avoids per-application user-cache redirection.
 
-Use `scene_id` to select an exact already-open room. A closed or unknown room
-fails without falling back to another room. Scene authoring validates motion
+The tools author into the current scene, the only one the ProjectServer has
+loaded. `scene_id` is optional; when given it must be the current scene, and any
+other id fails with `scene_not_current` instead of falling back to another room.
+Switch scenes in Studio first. Scene authoring validates motion
 and builds the skin before inserting objects, then rolls back newly authored
 objects/tracks if attachment or keyframe recording fails. It preserves existing
 objects, timeline length, frame rate and playhead. Generated motion assets are
@@ -75,7 +77,7 @@ retained for diagnosis rather than deleted after an authoring failure.
 For the current `witwin.radar.submit_animation_measurement` tool path:
 
 1. Enable Genesis, Humanoid and Radar and inspect runtime readiness.
-2. Generate the human with an explicit `scene_id` and
+2. Generate the human in the current scene with
    `playback_mode: "baked_transforms"`. Retain the returned
    `scene_binding.radar_target_contract` and target object ID.
 3. Retain the returned body object ID and motion interval. Use the installed
