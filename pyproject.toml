@@ -1,0 +1,39 @@
+# This Plugin is also a pip distribution (decision D11, phase P4 of
+# witwin-studio dev_docs/project-as-python-codebase.md). witwin.toml stays the
+# Studio manifest; setup.py maps the repository root onto the import package,
+# takes the version from witwin.toml and fails the build if witwin.toml lists
+# a dependency this file does not declare.
+#
+# "solve" holds the heavy or unpublished stack that only solver children need:
+# first-party witwin-* wheels (not on a public index yet) and GPU wheels such as
+# CUDA torch, which come from their own index.
+
+[build-system]
+requires = ["setuptools>=69", "tomli; python_version < '3.11'"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wt-genesis"
+dynamic = ["version"]
+description = "Text-to-motion humanoid generation."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+  "witwin-studio>=0.1,<0.2",
+  "numpy",
+  "scipy",
+  "packaging",
+  "wt-humanoid>=0.1,<0.2",
+]
+
+[project.optional-dependencies]
+solve = [
+  "witwin-genesis>=0.2,<0.3",
+  "torch>=2.4",
+  "smplx",
+  "h5py",
+]
+
+[project.entry-points."witwin.plugins"]
+"witwin.genesis" = "wt_genesis"

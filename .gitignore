@@ -4,3 +4,7 @@ __pycache__/
 
 # wt_genesis is a Studio glue plugin; Genesis runtime/model payloads live in witwin-genesis.
 vendor/
+# Python packaging output
+build/
+dist/
+*.egg-info/
