@@ -174,9 +174,10 @@ def test_register_adds_namespaced_tool_to_context():
     animation = next(tool for tool in ctx.tools.registered
                      if tool.name == "generate_humanoid_animation")
     assert "pack:witwin.scene" in animation.tags
-    assert "word-intent:person" in animation.tags
+    assert "hint-term:person" in animation.tags
     assert "hint-explicit-intent:someone walking" in animation.tags
-    assert "hint-requires-pack" in animation.tags
+    # Person words stay on the Tool: a pack intent would join the whole Scene pack.
+    assert not any(tag.startswith(("intent:", "word-intent:")) for tag in animation.tags)
 
 
 @dataclass

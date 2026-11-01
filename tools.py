@@ -28,30 +28,61 @@ from .adapter.trajectory_clearance import HumanoidTrajectoryBlocked
 logger = get_logger("Genesis")
 
 
-_HUMANOID_ANIMATION_RETRIEVAL_TAGS = (
-    "pack:witwin.scene",
-    "word-intent:human",
-    "word-intent:person",
-    "word-intent:someone",
-    "intent:人物",
-    "intent:人类",
-    "intent:一个人",
-    "hint-term:human animation",
-    "hint-term:person in the room",
-    "hint-term:human in the room",
-    "hint-explicit-intent:add one human",
-    "hint-explicit-intent:add a human",
-    "hint-explicit-intent:create a human",
-    "hint-explicit-intent:put a human",
-    "hint-explicit-intent:someone walking",
-    "hint-explicit-intent:someone stroll",
-    "hint-explicit-intent:person walking",
-    "hint-explicit-intent:person stroll",
-    "hint-explicit-intent:生成一个人",
-    "hint-explicit-intent:添加一个人",
-    "hint-explicit-intent:人物行走",
-    "hint-requires-pack",
-    "hint-boost:20",
+# Agent retrieval vocabulary, read by the ProjectServer Tool selection
+# (witwin_server.features.agent.tool_selection). Since S7c these tags are its
+# only source: the Studio rules for witwin.genesis.* were deleted and merged here.
+#
+# Every Genesis Tool joins the core Scene pack (Studio listed witwin.genesis.*
+# in it), so Scene requests ("scene", "object", "radar") reach Genesis too.
+# The person words are hint terms, not pack intents: the core folds a pack's
+# intents into the whole pack, so an intent tag here would pull every scene.*
+# Tool into each "person" request.
+#
+# The writers are execute-tier and stay hidden until an action phrase below.
+# The phrases need no pack match: a phrase such as "add a person" names no
+# Scene word, and each phrase already names a person.
+_SCENE_PACK = "pack:witwin.scene"
+_PERSON_TERMS = (
+    "genesis", "text to motion", "human animation", "human", "person", "someone",
+    "文本生成动作", "人体动画", "人物", "人类", "一个人",
+)
+_PERSON_ACTIONS = (
+    "generate a human", "generate human", "add one human", "add a human",
+    "add a person", "create a person", "create a human", "create human",
+    "add one person", "create one person", "one person who", "a person who",
+    "add someone", "someone who",
+    "make a person", "person walk", "person standing", "person sit",
+    "person stand", "person sit down", "person stand up",
+    "want a person", "would like someone", "have someone", "someone walking",
+    "someone walk", "someone stroll", "person walking", "person stroll",
+    "put a human", "human animation",
+    "生成一个人", "生成人体", "添加一个人", "创建人体",
+    "让一个人", "人体动画", "人物行走",
+)
+
+
+def _retrieval_tags(terms=(), actions=(), *, boost: int, explicit_only: bool = False) -> tuple[str, ...]:
+    return (
+        _SCENE_PACK,
+        *(f"hint-term:{term}" for term in terms),
+        *(f"hint-explicit-intent:{action}" for action in actions),
+        f"hint-boost:{boost}",
+        *(("hint-explicit-only",) if explicit_only else ()),
+    )
+
+
+# A read-only check has no vocabulary of its own; it only keeps its Scene pack seat.
+_RUNTIME_RETRIEVAL_TAGS = (_SCENE_PACK,)
+# Raw SMPL export is a narrower request than a person in the Scene: only the
+# words "smpl" or "genesis" open it.
+_SMPL_MOTION_RETRIEVAL_TAGS = _retrieval_tags(
+    ("text to smpl motion", "smpl motion", "SMPL 动作"), ("smpl", "genesis"),
+    boost=16, explicit_only=True,
+)
+_HUMANOID_ANIMATION_RETRIEVAL_TAGS = _retrieval_tags(
+    (*_PERSON_TERMS, "person in the room", "human in the room"),
+    _PERSON_ACTIONS,
+    boost=20,
 )
 
 
@@ -161,17 +192,12 @@ _ANIMATION_INPUT_SCHEMA = {
     "additionalProperties": False,
 }
 
-_ROUTE_RETRIEVAL_TAGS = (
-    "pack:witwin.scene",
-    "word-intent:person",
-    "hint-term:walk to",
-    "hint-term:sit on",
-    "hint-term:lie on the bed",
-    "hint-term:falls down",
-    "hint-explicit-intent:person walks to the sofa",
-    "hint-explicit-intent:person sits on the bed",
-    "hint-explicit-intent:走到沙发坐下",
-    "hint-requires-pack",
+# Studio's witwin.genesis.generate_*animation hint covered this Tool too, so a
+# person request exposes both writers; the model picks by route and end pose.
+_ROUTE_RETRIEVAL_TAGS = _retrieval_tags(
+    (*_PERSON_TERMS, "walk to", "sit on", "lie on the bed", "falls down"),
+    (*_PERSON_ACTIONS, "person walks to the sofa", "person sits on the bed", "走到沙发坐下"),
+    boost=16,
 )
 
 _ROUTE_DESCRIPTION = (
@@ -453,6 +479,7 @@ def make_check_genesis_runtime_tool(ctx: Any) -> Tool:
         output_schema={"type": "object"},
         permission_scope="genesis.runtime.read",
         permission_tier="read",
+        tags=_RUNTIME_RETRIEVAL_TAGS,
     )
     def check_genesis_runtime(args: dict[str, Any]) -> dict[str, object]:
         del args
@@ -489,6 +516,7 @@ def make_generate_smpl_motion_tool(ctx: Any, *, backend: Backend | None = None) 
         permission_scope="genesis.generate",
         permission_tier="execute",
         timeout=900.0,
+        tags=_SMPL_MOTION_RETRIEVAL_TAGS,
     )
     async def generate_smpl_motion(args: dict[str, Any]) -> dict[str, Any]:
         return await asyncio.to_thread(_run_generate, args, backend)
