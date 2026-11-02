@@ -7,6 +7,8 @@ maps the import name from the ``witwin.plugins`` entry point in
 
 - ships every runtime file (web assets, skills, examples, models) as package
   data, so a wheel install has the same Plugin root as a checkout;
+- ships each ``[[contributes.templates]]`` payload exactly as its content
+  manifest lists it;
 - takes the version from ``witwin.toml``, so the two files cannot drift;
 - fails the build when ``witwin.toml`` names a Python dependency that
   ``pyproject.toml`` does not declare, or when the entry point name is not the
@@ -16,6 +18,7 @@ The same file is copied into every Plugin repo; keep the copies identical.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 from pathlib import Path
@@ -81,12 +84,35 @@ def _check_manifest(manifest: dict, pyproject: dict, plugin_id: str) -> None:
         )
 
 
-def _package_data(package_dirs: set[Path]) -> list[str]:
+def _template_files(manifest: dict) -> tuple[set[Path], list[str]]:
+    """Project template payloads, file for file as their content manifest lists them.
+
+    Studio checks every byte of a template against that manifest, so a payload
+    must not lose files to the exclusions below (a template's own ``tests/``)
+    nor gain files the manifest does not list (``__pycache__`` from a local run).
+    """
+    roots: set[Path] = set()
+    files: list[str] = []
+    for item in manifest.get("contributes", {}).get("templates", []) or []:
+        template_dir = ROOT / item["dir"]
+        content = template_dir / item["manifest"]
+        with open(content, "rb") as handle:
+            listed = json.load(handle)["files"]
+        roots.add(template_dir)
+        files.append(content.relative_to(ROOT).as_posix())
+        files.extend((template_dir / entry["path"]).relative_to(ROOT).as_posix() for entry in listed)
+    return roots, files
+
+
+def _package_data(package_dirs: set[Path], template_roots: set[Path]) -> list[str]:
     """Every runtime file that is not a module of a found package."""
     files: list[str] = []
     for current, dirs, names in os.walk(ROOT):
-        dirs[:] = [d for d in dirs if d not in EXCLUDED_DIRS and not d.endswith(".egg-info")]
         here = Path(current)
+        dirs[:] = [
+            d for d in dirs
+            if d not in EXCLUDED_DIRS and not d.endswith(".egg-info") and here / d not in template_roots
+        ]
         for name in names:
             path = here / name
             if name in EXCLUDED_FILES and here == ROOT:
@@ -120,12 +146,13 @@ SUBPACKAGES = find_packages(
 )
 PACKAGES = [PACKAGE, *(f"{PACKAGE}.{name}" for name in SUBPACKAGES)]
 PACKAGE_DIRS = {ROOT, *(ROOT.joinpath(*name.split(".")) for name in SUBPACKAGES)}
+TEMPLATE_ROOTS, TEMPLATE_FILES = _template_files(MANIFEST)
 
 setup(
     version=str(MANIFEST["version"]),
     packages=PACKAGES,
     package_dir={PACKAGE: "."},
-    package_data={PACKAGE: _package_data(PACKAGE_DIRS)},
+    package_data={PACKAGE: _package_data(PACKAGE_DIRS, TEMPLATE_ROOTS) + TEMPLATE_FILES},
     include_package_data=False,
     cmdclass={"build_py": build_py},
 )
