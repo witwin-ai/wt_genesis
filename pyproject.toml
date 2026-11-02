@@ -18,7 +18,7 @@ dynamic = ["version"]
 description = "Text-to-motion humanoid generation."
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
   "witwin-studio>=0.1,<0.2",
   "numpy",
@@ -37,3 +37,16 @@ solve = [
 
 [project.entry-points."witwin.plugins"]
 "witwin.genesis" = "wt_genesis"
+
+# Nothing first-party comes from PyPI. uv reads this table only while
+# developing this repository (`uv sync`, `uv run pytest`); a Project that
+# depends on this Plugin pins its own sources (`witwin add`).
+[tool.uv.sources]
+witwin-studio = { index = "witwin" }
+wt-humanoid = { index = "witwin" }
+witwin-genesis = { index = "witwin" }
+
+[[tool.uv.index]]
+name = "witwin"
+url = "https://witwin-ai.github.io/python-index/simple/"
+explicit = true
