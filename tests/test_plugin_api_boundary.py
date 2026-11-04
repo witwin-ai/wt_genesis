@@ -34,24 +34,17 @@ else:  # pragma: no cover
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# First-party Plugin id -> Python package name.
-PLUGIN_PACKAGES = {
+# A first-party Plugin's Python package is ``wt_<name>`` for the id
+# ``<vendor>.<name>`` (pip distribution ``wt-<name>``), or the id itself when
+# it has no dot (``wt_humanoid``). Only the Plugins whose package breaks that
+# rule are listed here; a repo's own package comes from its pyproject.toml
+# ``witwin.plugins`` entry point or its manifest ``main`` first.
+PACKAGE_EXCEPTIONS = {
     "acme.roomgen": "wt_room_generator",
-    "witwin.channel": "wt_channel",
-    "witwin.genesis": "wt_genesis",
-    "witwin.home_simulation": "wt_home_simulation",
-    "witwin.maxwell": "wt_maxwell",
     "witwin.motion_matching": "witwin_motion_matching",
-    "witwin.node_editor": "wt_node_editor",
-    "witwin.radar": "wt_radar",
-    "witwin.sionna": "wt_sionna",
-    "witwin.splatting": "wt_splatting",
-    "witwin.streetmap": "wt_streetmap",
-    "witwin.ui_profiler": "wt_ui_profiler",
-    "witwin.volume": "wt_volume",
-    "wt_humanoid": "wt_humanoid",
-    "wt_optical": "wt_optical",
 }
+# Every top-level module with this prefix is a first-party Plugin package.
+PLUGIN_PACKAGE_PREFIX = "wt_"
 ALLOWED_STUDIO = ("witwin_server.api", "witwin_server.api.testing")
 # A system Plugin ``studio.<name>`` publishes its layer-C API here; the folder
 # under plugins_builtin is the id without "studio.".
@@ -64,8 +57,30 @@ def _manifest(root: Path) -> dict:
     return tomllib.loads((root / "witwin.toml").read_text(encoding="utf-8"))
 
 
+def package_for(plugin_id: str) -> str:
+    """The Python package of the first-party Plugin ``plugin_id``."""
+    if plugin_id in PACKAGE_EXCEPTIONS:
+        return PACKAGE_EXCEPTIONS[plugin_id]
+    if "." not in plugin_id:
+        return plugin_id
+    return PLUGIN_PACKAGE_PREFIX + plugin_id.rpartition(".")[2]
+
+
 def _own_package(manifest: dict, root: Path) -> str:
-    return PLUGIN_PACKAGES.get(manifest.get("id", ""), root.name)
+    plugin_id = manifest.get("id", "")
+    pyproject = root / "pyproject.toml"
+    if pyproject.is_file():
+        entry_points = tomllib.loads(pyproject.read_text(encoding="utf-8")).get("project", {}).get(
+            "entry-points", {}).get("witwin.plugins", {})
+        if entry_points.get(plugin_id):
+            return str(entry_points[plugin_id]).split(":")[0].split(".")[0]
+    if manifest.get("main"):
+        return str(manifest["main"]).split(".")[0]
+    return package_for(plugin_id) if plugin_id else root.name
+
+
+def _is_plugin_package(top: str) -> bool:
+    return top.startswith(PLUGIN_PACKAGE_PREFIX) or top in PACKAGE_EXCEPTIONS.values()
 
 
 def _dependency_ids(manifest: dict) -> set[str]:
@@ -76,7 +91,8 @@ def _dependency_ids(manifest: dict) -> set[str]:
 
 
 def _dependency_packages(manifest: dict) -> set[str]:
-    return {PLUGIN_PACKAGES[dep_id] for dep_id in _dependency_ids(manifest) if dep_id in PLUGIN_PACKAGES}
+    return {package_for(dep_id) for dep_id in _dependency_ids(manifest)
+            if dep_id and not dep_id.startswith("studio.")}
 
 
 def _system_apis(manifest: dict) -> set[str]:
@@ -110,7 +126,6 @@ def violations(root: Path = ROOT) -> list[str]:
     own = _own_package(manifest, root)
     deps = _dependency_packages(manifest)
     allowed_studio = set(ALLOWED_STUDIO) | _system_apis(manifest)
-    others = set(PLUGIN_PACKAGES.values()) - {own}
     found = []
     for path in sorted(root.rglob("*.py")):
         rel = path.relative_to(root)
@@ -122,7 +137,7 @@ def violations(root: Path = ROOT) -> list[str]:
             if top == "witwin_server":
                 if module not in allowed_studio:
                     found.append(f"{rel.as_posix()}:{line}  {module} (use witwin_server.api)")
-            elif top in others:
+            elif top != own and _is_plugin_package(top):
                 if top not in deps:
                     found.append(f"{rel.as_posix()}:{line}  {module} (Plugin not in pluginDependencies)")
                 elif module not in (top, f"{top}.api"):
