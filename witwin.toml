@@ -15,7 +15,7 @@ icon = "sparkles"
 enabled = true
 
 [engines]
-witwin = "^1.0.0"
+witwin = "^2.0.0"
 
 # Motion Matching's body-collision service (it depends on Genesis, so it is a
 # capability, not a pluginDependency). Without it sit/lie routes are refused
