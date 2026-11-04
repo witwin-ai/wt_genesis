@@ -222,8 +222,8 @@ def test_generate_humanoid_animation_tool_saves_and_broadcasts_final_scene(tmp_p
 
 
 def test_generate_humanoid_animation_persists_skinned_mesh_for_cold_load(tmp_path, monkeypatch):
-    from witwin_server.api import Scene
-    from witwin_server.persistence import PersistenceManager
+    from types import SimpleNamespace
+    from witwin_server.api import Scene, open_project_scene, save_project_scene
     import wt_genesis.adapter.scene_animation as scene_animation
     from wt_genesis.tools import make_generate_humanoid_animation_tool
 
@@ -235,7 +235,9 @@ def test_generate_humanoid_animation_persists_skinned_mesh_for_cold_load(tmp_pat
         def __init__(self, active_scene):
             super().__init__(active_scene)
             self.verbose = False
-            self.persistence = PersistenceManager(self)
+            # Studio's save of the current scene, headless.
+            self.persistence = SimpleNamespace(
+                save_scene=lambda force=False: save_project_scene(tmp_path, self.scene))
 
     server = PersistentServer(scene)
     tool = make_generate_humanoid_animation_tool(
@@ -254,7 +256,7 @@ def test_generate_humanoid_animation_persists_skinned_mesh_for_cold_load(tmp_pat
         )
     )
 
-    cold_scene = server.persistence.load_scene_by_id(scene.scene_id)
+    cold_scene = open_project_scene(tmp_path, scene.scene_id)
     cold_body = cold_scene.get_object(result["body_object_id"])
     cold_mesh = cold_body.get_component("SkinnedMesh")
     cold_data = cold_mesh.get_mesh_data()
