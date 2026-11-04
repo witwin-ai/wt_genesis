@@ -77,7 +77,7 @@ def test_host_would_merge_dense_source_keys_so_bundle_is_rejected(fps):
 
 @pytest.mark.parametrize("failure", [None, "missing", "merged", "time", "value", "interpolation", "controller"])
 def test_recorded_bake_verified_not_only_proposed_bundle(failure):
-    from witwin_server.features.timeline import InterpolationType
+    from witwin_server.api import InterpolationType
     scene, _, _ = _procedural_scene()
     timeline = scene.timeline_manager
     keys, receipt = _select(_bundle())
@@ -154,12 +154,10 @@ def test_invalid_contract_rejected(args):
 
 def _procedural_scene():
     """An invented 2-bone triangle, not SMPL model geometry or neural output."""
-    from witwin_server.core import Scene, SceneObject
-    from witwin_server.core.components import PlatformGeometryComponent
-    from witwin_server.features.timeline import TimelineManager
-    from wt_humanoid.adapter.smpl_motion import SMPLMotionData
-    from wt_humanoid.adapter.smpl_skinned import SMPLSkinAsset, attach_smpl_skinned_mesh
-    from wt_humanoid.components.smpl import SMPLBodyComponent, SMPLMotionComponent
+    from witwin_server.api import Scene, SceneObject, PlatformGeometryComponent, TimelineManager
+    from wt_humanoid.api import (
+        SMPLBodyComponent, SMPLMotionComponent, SMPLMotionData, SMPLSkinAsset, attach_smpl_skinned_mesh,
+    )
 
     scene = Scene(scene_id="license_free_playback_contract")
     target = SceneObject(id="human", name="Procedural contract proxy", mesh_type="Empty")
@@ -232,8 +230,16 @@ def test_baked_source_component_remains_unkeyed_and_parameter_pose_is_not_live()
     assert scene.timeline_manager.clip.get_track("source", "SMPLMotion", "current_frame") is None
 
 
+def _radar_sampler_module():
+    """wt_radar's public API, when it exports the Studio mesh sampler (optional dependency)."""
+    radar = pytest.importorskip("wt_radar.api")
+    if not hasattr(radar, "StudioSkinSampler"):
+        pytest.skip("wt_radar.api does not export StudioSkinSampler")
+    return radar
+
+
 def test_current_unmodified_radar_sampler_accepts_baked_proxy_only():
-    sampler_module = pytest.importorskip("wt_radar.adapter.studio_motion")
+    sampler_module = _radar_sampler_module()
     scene, target, _ = _procedural_scene()
     timeline = scene.timeline_manager
     timeline.record_keyframes(_bundle())
@@ -250,11 +256,11 @@ def test_current_unmodified_radar_sampler_accepts_baked_proxy_only():
 
 def test_explicit_producer_baked_mode_reaches_existing_mesh_sampler(tmp_path, monkeypatch):
     """Real authoring/loading/baking path with invented motion+skin, no RF solve."""
-    from witwin_server.core import Scene
+    from witwin_server.api import Scene
     from wt_genesis.adapter import scene_animation
     from test_scene_animation import _animated_backend_for_frames, _tiny_skin_asset
 
-    sampler_module = pytest.importorskip("wt_radar.adapter.studio_motion")
+    sampler_module = _radar_sampler_module()
     monkeypatch.setattr(scene_animation, "build_smpl_skin_asset", lambda *_args, **_kw: _tiny_skin_asset())
     scene = Scene(scene_id="new_human_producer_contract")
     result = scene_animation.create_humanoid_animation(

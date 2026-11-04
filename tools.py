@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 import importlib
 from importlib import metadata
 import os
@@ -10,9 +11,8 @@ from typing import Any
 
 from packaging.specifiers import SpecifierSet
 
-from witwin_server.plugins.paths import default_project_dir
-from witwin_server.tools.base import Tool, ToolError, tool
-from witwin_server.utils.logging import get_logger
+from witwin_server.api import Tool, ToolError, get_logger, tool
+from witwin_server.api import project_dir as default_project_dir
 
 from witwin.genesis.assets import inspect_runtime
 from witwin.genesis.motion_export import Backend, generate_motion_asset
@@ -371,7 +371,7 @@ def _run_route_animation(ctx: Any, args: dict[str, Any], *, generator: Any, geom
             sit_at=args.get("sit_at"),
             head_direction=args.get("head_direction"),
             support_height_m=args.get("support_height_m"),
-            geometry_reader=geometry_reader or _motion_matching_geometry_reader(),
+            geometry_reader=geometry_reader or _motion_matching_geometry_reader(ctx),
             prompt=args.get("prompt"),
             style_hint=args.get("style_hint"),
             speed_mps=float(args.get("speed_mps", 1.0)),
@@ -386,7 +386,7 @@ def _run_route_animation(ctx: Any, args: dict[str, Any], *, generator: Any, geom
             output_name=args.get("output_name"),
             body_name=args.get("body_name"),
             start_time=(float(args["start_time"]) if "start_time" in args else None),
-            body_validator=body_validator or _motion_matching_route_body_validation,
+            body_validator=body_validator or partial(_motion_matching_route_body_validation, ctx),
             generator=generator,
             skin=skin,
             mesh_assets=getattr(server, "mesh_assets", None),
@@ -417,17 +417,52 @@ def _run_route_animation(ctx: Any, args: dict[str, Any], *, generator: Any, geom
     return payload
 
 
-def _motion_matching_geometry_reader():
+# Motion Matching depends on Genesis, so Genesis cannot list it back in
+# pluginDependencies. Motion Matching provides its body-collision service as
+# this capability (witwin.toml [[imports.capabilities]], optional); without a
+# provider sit/lie are refused and the body checks raise the same ToolError
+# as when Motion Matching is not installed.
+BODY_COLLISION_CAPABILITY = "witwin.motion_matching.body_collision"
+
+
+def _body_collision_service(ctx: Any) -> Any:
+    """The provider object (``scene_geometry``, ``body_collision_report``,
+    ``body_collision_report_with_relocation``), or None when nobody provides it.
+
+    Resolved per call, not at register time: Motion Matching activates after
+    Genesis (it depends on Genesis), and it may be reloaded or disabled.
+    """
+    capabilities = getattr(ctx, "capabilities", None)
+    if capabilities is None:
+        return None
+    try:
+        service = capabilities.require(BODY_COLLISION_CAPABILITY, optional=True)
+    except Exception:  # noqa: BLE001 - an undeclared or failing provider counts as absent
+        logger.warning("capability %s could not be resolved", BODY_COLLISION_CAPABILITY, exc_info=True)
+        return None
+    if not getattr(service, "available", True):
+        return None
+    return service
+
+
+def _motion_matching_geometry_reader(ctx: Any):
     """Motion Matching's live scene geometry (footprints and mesh tops), or
     None when it is not installed (sit and lie are then refused)."""
-    try:
-        module = importlib.import_module("witwin_motion_matching.scene_geometry")
-        return getattr(module, "scene_geometry")
-    except (ImportError, AttributeError):
-        return None
+    return getattr(_body_collision_service(ctx), "scene_geometry", None)
+
+
+def _body_collision_check(ctx: Any, name: str):
+    validate = getattr(_body_collision_service(ctx), name, None)
+    if not callable(validate):
+        raise ToolError(
+            "humanoid body safety requires the Motion Matching collision provider",
+            code="humanoid_clearance_unavailable",
+        )
+    return validate
 
 
 def _motion_matching_route_body_validation(
+    ctx: Any,
     scene: Any,
     object_id: str,
     start_time: float,
@@ -435,14 +470,7 @@ def _motion_matching_route_body_validation(
 ) -> dict[str, Any]:
     """The final-LBS body check for a route walk, without relocation: moving
     or turning the whole track would take the person off its route."""
-    try:
-        module = importlib.import_module("witwin_motion_matching.body_collision_service")
-        validate = getattr(module, "body_collision_report")
-    except (ImportError, AttributeError) as exc:
-        raise ToolError(
-            "humanoid body safety requires the Motion Matching collision provider",
-            code="humanoid_clearance_unavailable",
-        ) from exc
+    validate = _body_collision_check(ctx, "body_collision_report")
     try:
         return validate(
             scene,
@@ -597,7 +625,7 @@ def _run_generate_animation(ctx: Any, args: dict[str, Any], backend: Backend | N
             mesh_assets=getattr(server, "mesh_assets", None),
             broadcast=_get_broadcast_for_server(server),
             serialize_object=_get_serializer(server, scene),
-            body_validator=_motion_matching_body_validation,
+            body_validator=partial(_motion_matching_body_validation, ctx),
         )
     except HumanoidTrajectoryBlocked as exc:
         raise ToolError(
@@ -632,23 +660,17 @@ def _finalize_scene_animation(server: Any, scene: Any, result: Any) -> dict[str,
 
 
 def _motion_matching_body_validation(
+    ctx: Any,
     scene: Any,
     object_id: str,
     start_time: float,
     end_time: float,
 ) -> dict[str, Any]:
     """Run the shared final-LBS validator before the Genesis transaction commits."""
-    try:
-        module = importlib.import_module("witwin_motion_matching.body_collision_service")
-        # Motion Matching owns collision recovery. Genesis still owns only the
-        # generated motion and scene binding; the bridge may translate the
-        # unchanged root track and revalidate it against the furnished room.
-        validate = getattr(module, "body_collision_report_with_relocation")
-    except (ImportError, AttributeError) as exc:
-        raise ToolError(
-            "humanoid body safety requires the Motion Matching collision provider",
-            code="humanoid_clearance_unavailable",
-        ) from exc
+    # Motion Matching owns collision recovery. Genesis still owns only the
+    # generated motion and scene binding; the bridge may translate the
+    # unchanged root track and revalidate it against the furnished room.
+    validate = _body_collision_check(ctx, "body_collision_report_with_relocation")
     try:
         return validate(
             scene,

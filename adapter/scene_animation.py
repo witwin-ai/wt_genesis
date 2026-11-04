@@ -10,13 +10,15 @@ from typing import Any, Callable, Sequence
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from witwin_server.core import SceneObject
-from witwin_server.core.components import MaterialComponent, PlatformGeometryComponent
-from witwin_server.features.timeline.data import InterpolationType
-from witwin_server.features.timeline.manager import TimelineManager
+from witwin_server.api import (
+    SceneObject,
+    MaterialComponent,
+    PlatformGeometryComponent,
+    InterpolationType,
+    TimelineManager,
+)
 from witwin.genesis.mdm_tiny_runtime import DEFAULT_MODEL_ROOT
-from wt_humanoid.adapter.smpl_motion import load_smpl_motion
-from wt_humanoid.adapter.smpl_skinned import attach_smpl_skinned_mesh, build_smpl_skin_asset
+from wt_humanoid.api import attach_smpl_skinned_mesh, build_smpl_skin_asset, load_smpl_motion
 
 from witwin.genesis.motion_export import Backend, MotionExportResult, generate_motion_asset
 from .baked_playback import (
@@ -623,7 +625,7 @@ def _timeline_state_message(timeline: TimelineManager) -> dict[str, Any]:
 
 
 def _create_smpl_body(name: str, position: list[float], rotation: list[float] | None = None):
-    from wt_humanoid.components.smpl import SMPLBodyComponent
+    from wt_humanoid.api import SMPLBodyComponent
 
     obj = SceneObject(name=name, mesh_type="Empty")
     body = SMPLBodyComponent()
@@ -641,7 +643,7 @@ def _create_smpl_body(name: str, position: list[float], rotation: list[float] | 
 
 
 def _create_smpl_motion(name: str, position: list[float]):
-    from wt_humanoid.components.smpl import SMPLMotionComponent
+    from wt_humanoid.api import SMPLMotionComponent
 
     obj = SceneObject(name=name, mesh_type="Empty")
     motion = SMPLMotionComponent()

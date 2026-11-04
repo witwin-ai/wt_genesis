@@ -203,7 +203,7 @@ def _route_following_generator(calls, *, start=(0.0, 0.92, 0.0), wobble=0.0):
 
 
 def _scene_with_tiny_skin(monkeypatch):
-    from witwin_server.core.scene import Scene
+    from witwin_server.api import Scene
     import wt_genesis.adapter.scene_animation as scene_animation
     from tests.test_scene_animation import _tiny_skin_asset
 
@@ -417,7 +417,7 @@ def test_path_following_measures_the_pelvis_not_the_pivoted_body_origin(tmp_path
     # on stayed within 5 cm (real 06_fall takes, 2026-10-30). Path following
     # and occupancy measure the pelvis-referenced root (key + R J0 - J0).
     from scipy.spatial.transform import Rotation
-    from witwin_server.core.scene import Scene
+    from witwin_server.api import Scene
     import wt_genesis.adapter.scene_animation as scene_animation
     from tests.test_root_pivot import _skin_with_pelvis_offset
     from wt_genesis.adapter.kimodo_path import create_humanoid_path_animation

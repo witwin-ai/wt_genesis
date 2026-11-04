@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass
 
 import numpy as np
+import pytest
 from types import SimpleNamespace
 
 
@@ -72,11 +73,12 @@ def test_humanoid_collision_bridge_delegates_relocation_to_motion_matching(monke
         return {"status": "clear_at_samples", "automatic_relocation": {"status": "applied"}}
 
     module = SimpleNamespace(body_collision_report_with_relocation=validate)
-    monkeypatch.setattr(genesis_tools.importlib, "import_module", lambda _name: module)
+    ctx = SimpleNamespace(capabilities=SimpleNamespace(require=lambda capability_id, **_kw: (
+        module if capability_id == genesis_tools.BODY_COLLISION_CAPABILITY else None)))
     monkeypatch.setattr(genesis_tools, "default_project_dir", lambda: "project-root")
     scene = object()
 
-    result = genesis_tools._motion_matching_body_validation(scene, "human", 1.0, 3.0)
+    result = genesis_tools._motion_matching_body_validation(ctx, scene, "human", 1.0, 3.0)
 
     assert result["automatic_relocation"]["status"] == "applied"
     assert captured["scene"] is scene
@@ -84,6 +86,20 @@ def test_humanoid_collision_bridge_delegates_relocation_to_motion_matching(monke
     assert captured["args"]["object_id"] == "human"
     assert captured["args"]["start"] == 1.0
     assert captured["args"]["end"] == 3.0
+
+
+def test_humanoid_collision_bridge_without_motion_matching_refuses(monkeypatch):
+    from witwin_server.api import ToolError
+    import wt_genesis.tools as genesis_tools
+
+    unavailable = SimpleNamespace(available=False)
+    ctx = SimpleNamespace(capabilities=SimpleNamespace(require=lambda *_a, **_kw: unavailable))
+
+    assert genesis_tools._motion_matching_geometry_reader(ctx) is None
+    assert genesis_tools._motion_matching_geometry_reader(object()) is None
+    with pytest.raises(ToolError) as caught:
+        genesis_tools._motion_matching_body_validation(ctx, object(), "human", 1.0, 3.0)
+    assert caught.value.code == "humanoid_clearance_unavailable"
 
 
 def test_check_genesis_runtime_tool_returns_structured_status(monkeypatch):

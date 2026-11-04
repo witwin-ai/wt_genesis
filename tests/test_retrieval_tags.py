@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from witwin_server.features.agent.tool_selection import select_tools
+from witwin_server.api.testing import select_tools
 
 PREFIX = "witwin.genesis."
 WRITERS = ("generate_smpl_motion", "generate_humanoid_animation", "generate_humanoid_route_animation")

@@ -15,7 +15,7 @@ from scipy.spatial.transform import Rotation
 
 
 def _skin_with_pelvis_offset():
-    from wt_humanoid.adapter.smpl_skinned import SMPLSkinAsset
+    from wt_humanoid.api import SMPLSkinAsset
 
     return SMPLSkinAsset(
         vertices=np.array([[0.0, -0.3, 0.0], [0.0, 0.5, 0.0], [0.1, -0.3, 0.0]], dtype=np.float32),
@@ -37,7 +37,7 @@ def _lying_backend(prompts, **_kwargs):
 
 
 def test_a_lying_body_keeps_its_pelvis_where_smpl_puts_it(tmp_path, monkeypatch):
-    from witwin_server.core.scene import Scene
+    from witwin_server.api import Scene
     import wt_genesis.adapter.scene_animation as scene_animation
     from wt_genesis.adapter.scene_animation import create_humanoid_animation
 
@@ -63,7 +63,7 @@ def test_the_saved_body_stands_where_its_root_track_starts(tmp_path, monkeypatch
     """Studio shows the static transform until the timeline first applies:
     left at the placement's y = 0 the pelvis was 1.17 m into the floor on
     frame 0 (the user saw a sunk person)."""
-    from witwin_server.core.scene import Scene
+    from witwin_server.api import Scene
     import wt_genesis.adapter.scene_animation as scene_animation
     from wt_genesis.adapter.scene_animation import create_humanoid_animation
 

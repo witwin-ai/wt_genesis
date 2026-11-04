@@ -7,9 +7,7 @@ import copy
 import numpy as np
 import pytest
 
-from witwin_server.core import SceneObject
-from witwin_server.core.scene import Scene
-from witwin_server.features.timeline.manager import TimelineManager
+from witwin_server.api import SceneObject, Scene, TimelineManager
 
 from wt_genesis.adapter import scene_animation as adapter
 from test_scene_animation import _animated_backend_for_frames, _tiny_skin_asset

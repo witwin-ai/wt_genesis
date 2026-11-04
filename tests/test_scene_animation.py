@@ -39,7 +39,7 @@ def test_baked_euler_values_use_nearest_equivalent_across_wrap_and_gimbal():
 
 
 def test_generate_humanoid_animation_tool_creates_scene_timeline_and_playback(tmp_path, monkeypatch):
-    from witwin_server.core.scene import Scene
+    from witwin_server.api import Scene
     import wt_genesis.adapter.scene_animation as scene_animation
     from wt_genesis.tools import make_generate_humanoid_animation_tool
 
@@ -115,7 +115,7 @@ def test_generate_humanoid_animation_tool_creates_scene_timeline_and_playback(tm
 
 
 def test_generate_humanoid_animation_reuses_existing_body_for_follow_up(tmp_path, monkeypatch):
-    from witwin_server.core.scene import Scene
+    from witwin_server.api import Scene
     import wt_genesis.adapter.scene_animation as scene_animation
     from wt_genesis.tools import make_generate_humanoid_animation_tool
 
@@ -153,7 +153,7 @@ def test_generate_humanoid_animation_reuses_existing_body_for_follow_up(tmp_path
 
 
 def test_generate_humanoid_animation_rejects_blocked_root_sweep_before_scene_write(tmp_path, monkeypatch):
-    from witwin_server.core.scene import Scene
+    from witwin_server.api import Scene
     import wt_genesis.adapter.scene_animation as scene_animation
     import wt_genesis.tools as genesis_tools
     from wt_genesis.tools import make_generate_humanoid_animation_tool
@@ -192,7 +192,7 @@ def test_generate_humanoid_animation_rejects_blocked_root_sweep_before_scene_wri
 
 
 def test_generate_humanoid_animation_tool_saves_and_broadcasts_final_scene(tmp_path, monkeypatch):
-    from witwin_server.core.scene import Scene
+    from witwin_server.api import Scene
     import wt_genesis.adapter.scene_animation as scene_animation
     from wt_genesis.tools import make_generate_humanoid_animation_tool
 
@@ -222,7 +222,7 @@ def test_generate_humanoid_animation_tool_saves_and_broadcasts_final_scene(tmp_p
 
 
 def test_generate_humanoid_animation_persists_skinned_mesh_for_cold_load(tmp_path, monkeypatch):
-    from witwin_server.core.scene import Scene
+    from witwin_server.api import Scene
     from witwin_server.persistence import PersistenceManager
     import wt_genesis.adapter.scene_animation as scene_animation
     from wt_genesis.tools import make_generate_humanoid_animation_tool
@@ -268,7 +268,7 @@ def test_generate_humanoid_animation_persists_skinned_mesh_for_cold_load(tmp_pat
 
 def test_generate_humanoid_animation_keys_root_motion_on_body_transform(tmp_path, monkeypatch):
     from scipy.spatial.transform import Rotation
-    from witwin_server.core.scene import Scene
+    from witwin_server.api import Scene
     import wt_genesis.adapter.scene_animation as scene_animation
     from wt_genesis.adapter.scene_animation import create_humanoid_animation
 
@@ -314,7 +314,7 @@ def test_generate_humanoid_animation_keys_root_motion_on_body_transform(tmp_path
 
 
 def test_generate_humanoid_animation_offsets_all_baked_tracks(tmp_path, monkeypatch):
-    from witwin_server.core.scene import Scene
+    from witwin_server.api import Scene
     import wt_genesis.adapter.scene_animation as scene_animation
     from wt_genesis.adapter.scene_animation import create_humanoid_animation
 
@@ -367,7 +367,7 @@ def test_generate_humanoid_animation_offsets_all_baked_tracks(tmp_path, monkeypa
 def test_floor_penetration_is_lifted_and_revalidated_without_ignoring_obstacles(
     tmp_path, monkeypatch,
 ):
-    from witwin_server.core.scene import Scene
+    from witwin_server.api import Scene
     import wt_genesis.adapter.scene_animation as scene_animation
     from wt_genesis.adapter.scene_animation import create_humanoid_animation
 
@@ -439,7 +439,7 @@ def test_floor_penetration_is_lifted_and_revalidated_without_ignoring_obstacles(
 
 
 def test_generate_humanoid_animation_preserves_initial_vertical_root_translation(tmp_path, monkeypatch):
-    from witwin_server.core.scene import Scene
+    from witwin_server.api import Scene
     import wt_genesis.adapter.scene_animation as scene_animation
     from wt_genesis.adapter.scene_animation import create_humanoid_animation
 
@@ -468,7 +468,7 @@ def test_generate_humanoid_animation_preserves_initial_vertical_root_translation
 
 
 def test_generate_humanoid_animation_builds_skinned_mesh_visual(tmp_path, monkeypatch):
-    from witwin_server.core.scene import Scene
+    from witwin_server.api import Scene
     import wt_genesis.adapter.scene_animation as scene_animation
     from wt_genesis.adapter.scene_animation import create_humanoid_animation
 
@@ -521,7 +521,7 @@ def test_generate_humanoid_animation_builds_skinned_mesh_visual(tmp_path, monkey
 
 
 def test_generate_humanoid_animation_broadcasts_final_objects_and_timeline(tmp_path, monkeypatch):
-    from witwin_server.core.scene import Scene
+    from witwin_server.api import Scene
     import wt_genesis.adapter.scene_animation as scene_animation
     from wt_genesis.adapter.scene_animation import create_humanoid_animation
 
@@ -559,7 +559,7 @@ def test_generate_humanoid_animation_broadcasts_final_objects_and_timeline(tmp_p
 
 
 def test_generate_humanoid_animation_returns_radar_04_target_contract(tmp_path, monkeypatch):
-    from witwin_server.core.scene import Scene
+    from witwin_server.api import Scene
     import wt_genesis.adapter.scene_animation as scene_animation
     from wt_genesis.tools import make_generate_humanoid_animation_tool
     monkeypatch.setenv("WITWIN_PROJECT_DIR", str(tmp_path))
@@ -592,7 +592,7 @@ def test_generate_humanoid_animation_returns_radar_04_target_contract(tmp_path, 
     }
 
 def _tiny_skin_asset():
-    from wt_humanoid.adapter.smpl_skinned import SMPLSkinAsset
+    from wt_humanoid.api import SMPLSkinAsset
 
     return SMPLSkinAsset(
         vertices=np.array(
@@ -675,11 +675,32 @@ class _ToolBucket:
         return tool
 
 
+class _EmptyRoomCollision:
+    """Stands in for Motion Matching's ``witwin.motion_matching.body_collision``
+    capability in a room with no furniture: the provider reports that there is
+    no static geometry, which the Genesis bridge treats as clear."""
+
+    def scene_geometry(self, _scene):
+        return []
+
+    def body_collision_report(self, *_args):
+        raise RuntimeError("no exact static environment geometry")
+
+    body_collision_report_with_relocation = body_collision_report
+
+
+class _FakeCapabilities:
+    def require(self, capability_id, version="*", *, optional=False):
+        assert capability_id == "witwin.motion_matching.body_collision"
+        return _EmptyRoomCollision()
+
+
 class _FakeContext:
     def __init__(self, scene, server=None):
         self.scene = scene
         self.api = _FakeApi(scene, server) if server is not None else None
         self.tools = _ToolBucket([])
+        self.capabilities = _FakeCapabilities()
 
 
 class _FakeApi:

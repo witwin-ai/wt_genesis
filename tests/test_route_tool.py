@@ -39,7 +39,7 @@ def _call(tool, args):
 
 
 def test_on_mdm_a_route_is_refused_not_written_into_a_prompt(tmp_path, monkeypatch):
-    from witwin_server.tools.base import ToolError
+    from witwin_server.api import ToolError
 
     monkeypatch.setenv("WITWIN_PROJECT_DIR", str(tmp_path))
     monkeypatch.setenv("WITWIN_GENESIS_BACKEND", "mdm_tiny")
@@ -97,7 +97,7 @@ def test_an_end_facing_direction_becomes_a_kimodo_heading(tmp_path, monkeypatch)
 ])
 def test_refusals_carry_codes_the_scenario_layer_translates(tmp_path, monkeypatch, args,
                                                             geometry, code):
-    from witwin_server.tools.base import ToolError
+    from witwin_server.api import ToolError
 
     monkeypatch.setenv("WITWIN_PROJECT_DIR", str(tmp_path))
     monkeypatch.setenv("WITWIN_GENESIS_BACKEND", "kimodo")
@@ -111,7 +111,7 @@ def test_refusals_carry_codes_the_scenario_layer_translates(tmp_path, monkeypatc
 
 
 def test_every_refused_take_is_reported(tmp_path, monkeypatch):
-    from witwin_server.tools.base import ToolError
+    from witwin_server.api import ToolError
 
     monkeypatch.setenv("WITWIN_PROJECT_DIR", str(tmp_path))
     monkeypatch.setenv("WITWIN_GENESIS_BACKEND", "kimodo")
@@ -150,10 +150,11 @@ def test_the_route_body_check_does_not_relocate_the_walk(monkeypatch):
         return {"status": "clear_at_samples"}
 
     module = SimpleNamespace(body_collision_report=report)
-    monkeypatch.setattr(genesis_tools.importlib, "import_module", lambda _name: module)
+    ctx = SimpleNamespace(capabilities=SimpleNamespace(require=lambda capability_id, **_kw: (
+        module if capability_id == genesis_tools.BODY_COLLISION_CAPABILITY else None)))
     monkeypatch.setattr(genesis_tools, "default_project_dir", lambda: "project-root")
 
-    result = genesis_tools._motion_matching_route_body_validation(object(), "human", 0.5, 4.0)
+    result = genesis_tools._motion_matching_route_body_validation(ctx, object(), "human", 0.5, 4.0)
 
     assert result["status"] == "clear_at_samples"
     assert captured["args"]["object_id"] == "human"

@@ -57,7 +57,7 @@ def test_a_standing_route_rests_alive_to_the_clip_end(tmp_path, monkeypatch):
 
 
 def test_the_rest_goes_to_the_scene_clip_end_by_default(tmp_path, monkeypatch):
-    from witwin_server.features.timeline.data import InterpolationType
+    from witwin_server.api import InterpolationType
     from wt_genesis.adapter.route_animation import create_route_animation
     from wt_genesis.adapter.scene_animation import _ensure_timeline
 

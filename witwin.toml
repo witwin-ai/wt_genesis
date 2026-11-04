@@ -7,13 +7,23 @@ homepage = ""
 repository = ""
 license = "MIT"
 dependencies = ["witwin-genesis>=0.2,<0.3"]
-pluginDependencies = ["wt_humanoid"]
+# witwin.radar is used only by the tests that feed Genesis output to the radar
+# mesh sampler (tests/test_baked_playback.py); they skip without it.
+pluginDependencies = ["wt_humanoid", { id = "witwin.radar", optional = true }]
 entry_point = "__init__.py"
 icon = "sparkles"
 enabled = true
 
 [engines]
 witwin = "^1.0.0"
+
+# Motion Matching's body-collision service (it depends on Genesis, so it is a
+# capability, not a pluginDependency). Without it sit/lie routes are refused
+# and the body checks report humanoid_clearance_unavailable.
+[[imports.capabilities]]
+id = "witwin.motion_matching.body_collision"
+version = "^1.0.0"
+optional = true
 
 [[contributes.tools]]
 module = "tools"

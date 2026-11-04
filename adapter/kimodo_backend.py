@@ -200,7 +200,7 @@ SMPL_FOOT_JOINTS = (7, 8, 10, 11)
 
 def _smpl_skin_asset():
     from witwin.genesis.mdm_tiny_runtime import DEFAULT_MODEL_ROOT
-    from wt_humanoid.adapter.smpl_skinned import build_smpl_skin_asset
+    from wt_humanoid.api import build_smpl_skin_asset
 
     root = os.environ.get("WITWIN_SMPL_MODEL_ROOT") or str(DEFAULT_MODEL_ROOT)
     return build_smpl_skin_asset(root, gender="neutral", betas=[0.0] * 10)
@@ -227,7 +227,7 @@ def smpl_rest_skeleton() -> SMPLRestSkeleton | None:
     Kimodo clips have), or None when the licensed model files are missing."""
     try:
         from witwin.genesis.mdm_tiny_runtime import DEFAULT_MODEL_ROOT
-        from wt_humanoid.adapter.smpl_skinned import build_smpl_skin_asset
+        from wt_humanoid.api import build_smpl_skin_asset
 
         root = os.environ.get("WITWIN_SMPL_MODEL_ROOT") or str(DEFAULT_MODEL_ROOT)
         asset = build_smpl_skin_asset(root, gender="neutral", betas=[0.0] * 10)
