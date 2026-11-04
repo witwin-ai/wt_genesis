@@ -727,7 +727,7 @@ class _FakeServer:
         self.messages: list[dict] = []
         self.persistence = _FakePersistence()
 
-    def _safe_broadcast(self, message):
+    def _emit_scene_delta(self, message):
         self.messages.append(message)
 
     def _serialize_object(self, obj, scene):

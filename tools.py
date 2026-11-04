@@ -787,8 +787,14 @@ def _get_broadcast(ctx: Any):
 
 
 def _get_broadcast_for_server(server: Any):
-    broadcast = getattr(server, "_safe_broadcast", None)
-    return broadcast if callable(broadcast) else None
+    """Where generated objects and the clip state go: the scene op stream.
+
+    ``objects_batch_created`` and ``timeline_state`` are scene deltas; since
+    D16 P9 Studio sends scene changes to windows only as op patches, so a flat
+    ``_safe_broadcast`` would reach nobody.
+    """
+    emit = getattr(server, "_emit_scene_delta", None)
+    return emit if callable(emit) else None
 
 
 def _get_serializer(server: Any, scene: Any):
