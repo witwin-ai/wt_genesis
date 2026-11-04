@@ -7,7 +7,9 @@ Allowed, from dev_docs/everything-is-a-plugin-plan.md section 7 in witwin-studio
   ``witwin_server.api.testing``;
 - C: another first-party Plugin's ``<package>.api`` module, or its package
   itself for its import-time registrations, only when this Plugin lists that
-  Plugin in ``pluginDependencies``.
+  Plugin in ``pluginDependencies``. For a system Plugin ``studio.<name>``
+  that module is ``witwin_server.plugins_builtin.<name>.api`` (for example
+  ``studio.em``, 2026-11-03).
 
 Every other ``witwin_server`` module, and every other module of another
 Plugin, fails this test: Studio's internals may move at any time. The test
@@ -51,6 +53,9 @@ PLUGIN_PACKAGES = {
     "wt_optical": "wt_optical",
 }
 ALLOWED_STUDIO = ("witwin_server.api", "witwin_server.api.testing")
+# A system Plugin ``studio.<name>`` publishes its layer-C API here; the folder
+# under plugins_builtin is the id without "studio.".
+SYSTEM_PLUGIN_API = "witwin_server.plugins_builtin.{}.api"
 SKIP_DIRS = {".git", ".venv", "venv", "__pycache__", "node_modules", "build", "dist", ".pytest_cache",
              ".pytest-tmp", ".witwin", "site-packages", "web"}
 
@@ -63,13 +68,21 @@ def _own_package(manifest: dict, root: Path) -> str:
     return PLUGIN_PACKAGES.get(manifest.get("id", ""), root.name)
 
 
-def _dependency_packages(manifest: dict) -> set[str]:
+def _dependency_ids(manifest: dict) -> set[str]:
     out = set()
     for dep in manifest.get("pluginDependencies", []) or []:
-        dep_id = dep if isinstance(dep, str) else (dep or {}).get("id", "")
-        if dep_id in PLUGIN_PACKAGES:
-            out.add(PLUGIN_PACKAGES[dep_id])
+        out.add(dep if isinstance(dep, str) else (dep or {}).get("id", ""))
     return out
+
+
+def _dependency_packages(manifest: dict) -> set[str]:
+    return {PLUGIN_PACKAGES[dep_id] for dep_id in _dependency_ids(manifest) if dep_id in PLUGIN_PACKAGES}
+
+
+def _system_apis(manifest: dict) -> set[str]:
+    """``witwin_server.plugins_builtin.<name>.api`` of every ``studio.<name>`` dependency."""
+    return {SYSTEM_PLUGIN_API.format(dep_id[len("studio."):])
+            for dep_id in _dependency_ids(manifest) if dep_id.startswith("studio.")}
 
 
 def _imports(tree: ast.AST):
@@ -96,6 +109,7 @@ def violations(root: Path = ROOT) -> list[str]:
     manifest = _manifest(root)
     own = _own_package(manifest, root)
     deps = _dependency_packages(manifest)
+    allowed_studio = set(ALLOWED_STUDIO) | _system_apis(manifest)
     others = set(PLUGIN_PACKAGES.values()) - {own}
     found = []
     for path in sorted(root.rglob("*.py")):
@@ -106,7 +120,7 @@ def violations(root: Path = ROOT) -> list[str]:
         for line, module in _imports(tree):
             top = module.split(".")[0]
             if top == "witwin_server":
-                if module not in ALLOWED_STUDIO:
+                if module not in allowed_studio:
                     found.append(f"{rel.as_posix()}:{line}  {module} (use witwin_server.api)")
             elif top in others:
                 if top not in deps:
